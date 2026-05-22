@@ -1,0 +1,256 @@
+---
+title: "Manage the full order delivery lifecycle"
+description: "Create an order, assign a driver, track transit, record delivery, collect payment, and issue an invoice — all through the Rappi2 API."
+---
+
+Every delivery in Rappi2 follows a well-defined path: an order is placed, a driver and vehicle are paired to it, the driver picks up and delivers the package, and the transaction is closed with a payment and invoice. This guide walks through each stage in sequence and shows the exact API calls you need at every step.
+
+## Order state machine
+
+An order moves through the following states. Transitions are driven automatically by actions on the `/api/asignaciones` resource — you never need to PATCH the order state directly during the normal flow.
+
+```
+Pendiente
+   │
+   │  POST /api/asignaciones        (auto)
+   ▼
+En Proceso
+   │
+   │  PATCH /api/asignaciones/{id}/iniciar   (auto)
+   ▼
+En Tránsito
+   │
+   │  PATCH /api/asignaciones/{id}/finalizar  (auto)
+   ▼
+Entregado
+
+(any state) ──→  Cancelado   [DELETE /api/ordenes/{id}]
+```
+
+| Order state | Assignment state | Trigger |
+|---|---|---|
+| `Pendiente` | — | Order created |
+| `En Proceso` | `Asignada` | Assignment created |
+| `En Tránsito` | `EnCurso` | `/iniciar` called |
+| `Entregado` | `Finalizada` | `/finalizar` called |
+| `Cancelado` | — | Order deleted |
+
+---
+
+<Steps>
+  <Step title="Create an order">
+    Submit the customer, origin address, and destination address. The order is created in the `Pendiente` state.
+
+    **Required permission:** `ordenes:write`
+
+    ```bash
+    curl -X POST https://api.rappi2.example/api/ordenes \
+      -H "Authorization: Bearer $TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "cliente_id": 42,
+        "direccion_origen": "Av. Larco 1150, Miraflores",
+        "distrito_origen": "Miraflores",
+        "direccion_destino": "Jr. de la Unión 398, Cercado de Lima",
+        "distrito_destino": "Cercado de Lima",
+        "total": "85.50"
+      }'
+    ```
+
+    **Response `201 Created`:**
+
+    ```json
+    {
+      "id": 1001,
+      "cliente_id": 42,
+      "direccion_origen": "Av. Larco 1150, Miraflores",
+      "distrito_origen": "Miraflores",
+      "direccion_destino": "Jr. de la Unión 398, Cercado de Lima",
+      "distrito_destino": "Cercado de Lima",
+      "total": "85.50",
+      "estado": "Pendiente",
+      "fecha_creacion": "2025-06-01T10:00:00Z"
+    }
+    ```
+
+    | Field | Type | Required | Notes |
+    |---|---|---|---|
+    | `cliente_id` | integer | Yes | Must reference an active client |
+    | `direccion_origen` | string | Yes | Full pickup address |
+    | `distrito_origen` | string | No | District / borough |
+    | `direccion_destino` | string | Yes | Full delivery address |
+    | `distrito_destino` | string | No | District / borough |
+    | `total` | decimal | No | Order value |
+  </Step>
+
+  <Step title="Assign a driver">
+    Link a driver and vehicle to the order. Both must be in service before the API will accept the assignment.
+
+    **Required permission:** `asignaciones:write`
+
+    ```bash
+    curl -X POST https://api.rappi2.example/api/asignaciones \
+      -H "Authorization: Bearer $TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "orden_id": 1001,
+        "conductor_id": 7,
+        "vehiculo_placa": "ABC-123"
+      }'
+    ```
+
+    **Response `201 Created`:**
+
+    ```json
+    {
+      "id": 55,
+      "orden_id": 1001,
+      "conductor_id": 7,
+      "vehiculo_placa": "ABC-123",
+      "estado": "Asignada",
+      "fecha_inicio": null,
+      "fecha_fin": null
+    }
+    ```
+
+    | Field | Type | Required | Notes |
+    |---|---|---|---|
+    | `orden_id` | integer | Yes | Must be in `Pendiente` state |
+    | `conductor_id` | integer | Yes | Must be active and `Disponible` |
+    | `vehiculo_placa` | string | Yes | Must be active and `Operativo` |
+
+    <Warning>
+      The API validates both resources before creating the assignment. The conductor's `disponibilidad` must be `"Disponible"` and the vehicle's `estado` must be `"Operativo"`. Any other value returns `400`.
+    </Warning>
+
+    <Note>
+      Creating an assignment automatically transitions the linked order from `Pendiente` to `En Proceso` and flips the conductor's `disponibilidad` to `"Ocupado"`. No separate PATCH is needed.
+    </Note>
+  </Step>
+
+  <Step title="Start the delivery (iniciar)">
+    Call `/iniciar` when the driver picks up the package and begins transit. The assignment must be in the `Asignada` state.
+
+    **Required permission:** `asignaciones:write`
+
+    ```bash
+    curl -X PATCH https://api.rappi2.example/api/asignaciones/55/iniciar \
+      -H "Authorization: Bearer $TOKEN"
+    ```
+
+    **Response `200 OK`:**
+
+    ```json
+    {
+      "id": 55,
+      "orden_id": 1001,
+      "conductor_id": 7,
+      "vehiculo_placa": "ABC-123",
+      "estado": "EnCurso",
+      "fecha_inicio": "2025-06-01T10:15:00Z",
+      "fecha_fin": null
+    }
+    ```
+
+    This call sets `asignacion.estado` → `EnCurso`, records `fecha_inicio` (UTC), and transitions the linked order to `En Tránsito`.
+  </Step>
+
+  <Step title="Complete the delivery (finalizar)">
+    Call `/finalizar` once the package has been delivered. The assignment must be in the `EnCurso` state.
+
+    **Required permission:** `asignaciones:write`
+
+    ```bash
+    curl -X PATCH https://api.rappi2.example/api/asignaciones/55/finalizar \
+      -H "Authorization: Bearer $TOKEN"
+    ```
+
+    **Response `200 OK`:**
+
+    ```json
+    {
+      "id": 55,
+      "orden_id": 1001,
+      "conductor_id": 7,
+      "vehiculo_placa": "ABC-123",
+      "estado": "Finalizada",
+      "fecha_inicio": "2025-06-01T10:15:00Z",
+      "fecha_fin": "2025-06-01T11:02:00Z"
+    }
+    ```
+
+    This call sets `asignacion.estado` → `Finalizada`, records `fecha_fin` (UTC), transitions the order to `Entregado`, and resets the conductor's `disponibilidad` back to `"Disponible"`.
+  </Step>
+
+  <Step title="Record payment">
+    Post a payment against the order. Payments are scoped under the order they belong to.
+
+    **Required permission:** `pagos:write`
+
+    ```bash
+    curl -X POST https://api.rappi2.example/api/ordenes/1001/pagos \
+      -H "Authorization: Bearer $TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "monto": "85.50",
+        "estado": "Pagado",
+        "referencia_banco": "TXN-20250601-00842"
+      }'
+    ```
+
+    **Response `201 Created`:**
+
+    ```json
+    {
+      "id": 301,
+      "orden_id": 1001,
+      "monto": "85.50",
+      "estado": "Pagado",
+      "referencia_banco": "TXN-20250601-00842",
+      "fecha_pago": "2025-06-01T11:05:00Z"
+    }
+    ```
+
+    | Field | Type | Required | Notes |
+    |---|---|---|---|
+    | `monto` | decimal | Yes | Payment amount |
+    | `estado` | string | No | `Pendiente` \| `Pagado` \| `Fallido` \| `Reembolsado`. Defaults to `Pendiente` |
+    | `referencia_banco` | string | No | Bank transaction reference |
+  </Step>
+
+  <Step title="Issue an invoice">
+    Create a fiscal invoice for the order. Invoices are also scoped under their order.
+
+    **Required permission:** `facturas:write`
+
+    ```bash
+    curl -X POST https://api.rappi2.example/api/ordenes/1001/facturas \
+      -H "Authorization: Bearer $TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "ruc": "20512345678",
+        "monto": "85.50",
+        "url": "https://storage.rappi2.example/facturas/F001-00301.pdf"
+      }'
+    ```
+
+    **Response `201 Created`:**
+
+    ```json
+    {
+      "id": 201,
+      "orden_id": 1001,
+      "ruc": "20512345678",
+      "monto": "85.50",
+      "url": "https://storage.rappi2.example/facturas/F001-00301.pdf",
+      "fecha": "2025-06-01T11:06:00Z"
+    }
+    ```
+
+    | Field | Type | Required | Notes |
+    |---|---|---|---|
+    | `ruc` | string | No | Taxpayer ID of the recipient |
+    | `monto` | decimal | Yes | Invoice amount |
+    | `url` | string | No | URL to the PDF file |
+  </Step>
+</Steps>

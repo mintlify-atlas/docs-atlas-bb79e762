@@ -1,0 +1,441 @@
+---
+title: "Roles and permissions API"
+description: "Manage roles and fine-grained RBAC permissions. Create and update roles, attach or remove permission entries, and query permissions by resource or role."
+---
+
+The Roles API implements role-based access control (RBAC). A **role** (`Rol`) groups a set of **permissions** (`Permiso`). Each permission grants a specific `accion` on a named `recurso`. Every user is assigned exactly one role, and their allowed operations are derived from the permissions attached to that role.
+
+All endpoints require a valid `Bearer` token. Read operations require `roles:read`; mutations require `roles:write`; deletion of roles requires `roles:delete`.
+
+### Available resources and actions
+
+| `recurso`  | Description                              |
+|------------|------------------------------------------|
+| `usuarios` | User accounts                            |
+| `roles`    | Roles and permissions                    |
+| `sesiones` | Refresh token sessions                   |
+| `clientes` | Client records and addresses             |
+| `ordenes`  | Delivery orders, payments, invoices      |
+| `conductores` | Driver records                        |
+| `vehiculos` | Vehicle fleet                           |
+| `asignaciones` | Delivery assignments                 |
+| `rutas`    | Planned routes and stops                 |
+| `tracking` | GPS pings                                |
+| `geocercas` | Geofences                               |
+| `incidencias` | Incident reports and evidence         |
+| `notificaciones` | Notifications                      |
+| `reportes` | Analytics and reporting endpoints        |
+| `auditoria` | HTTP audit logs                         |
+| `*`        | Wildcard — matches any resource          |
+
+| `accion`  | Description                              |
+|-----------|------------------------------------------|
+| `read`    | List and retrieve                        |
+| `write`   | Create and update                        |
+| `delete`  | Delete or revoke                         |
+| `*`       | Wildcard — grants all actions            |
+
+---
+
+## GET /api/roles/
+
+List all roles together with their associated permissions.
+
+**Authentication:** `Bearer` token required.  
+**Permission required:** `roles:read`
+
+### Response — 200 OK
+
+Returns an array of `RolResponse` objects.
+
+<ResponseField name="id" type="number" required>
+  Auto-incremented role ID.
+</ResponseField>
+
+<ResponseField name="nombre" type="string" required>
+  Unique role name. Maximum 50 characters.
+</ResponseField>
+
+<ResponseField name="permisos" type="array" required>
+  Permissions assigned to this role.
+  <Expandable title="properties">
+    <ResponseField name="id" type="number" required>Permission ID.</ResponseField>
+    <ResponseField name="rol_id" type="number" required>Parent role ID.</ResponseField>
+    <ResponseField name="recurso" type="string" required>Resource name.</ResponseField>
+    <ResponseField name="accion" type="string" required>Granted action.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<RequestExample>
+```bash cURL
+curl --request GET \
+  --url https://api.example.com/api/roles/ \
+  --header 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+[
+  {
+    "id": 1,
+    "nombre": "Cliente",
+    "permisos": []
+  },
+  {
+    "id": 2,
+    "nombre": "Admin",
+    "permisos": [
+      { "id": 1, "rol_id": 2, "recurso": "*", "accion": "*" }
+    ]
+  }
+]
+```
+</ResponseExample>
+
+---
+
+## POST /api/roles/
+
+Create a new role. The new role starts with no permissions; add them with `POST /api/roles/{rol_id}/permisos`.
+
+**Authentication:** `Bearer` token required.  
+**Permission required:** `roles:write`
+
+### Request body
+
+<ParamField body="nombre" type="string" required>
+  Unique role name. Maximum 50 characters.
+</ParamField>
+
+### Response — 201 Created
+
+Returns the created `RolResponse`.
+
+<RequestExample>
+```bash cURL
+curl --request POST \
+  --url https://api.example.com/api/roles/ \
+  --header 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...' \
+  --header 'Content-Type: application/json' \
+  --data '{"nombre": "Supervisor"}'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 201
+{
+  "id": 4,
+  "nombre": "Supervisor",
+  "permisos": []
+}
+```
+
+```json 400
+{ "detail": "Nombre de rol ya existe" }
+```
+</ResponseExample>
+
+---
+
+## GET /api/roles/{rol_id}
+
+Retrieve a single role by ID, including all its permissions.
+
+**Authentication:** `Bearer` token required.  
+**Permission required:** `roles:read`
+
+### Path parameters
+
+<ParamField path="rol_id" type="number" required>
+  ID of the role to retrieve.
+</ParamField>
+
+### Response — 200 OK
+
+Returns a `RolResponse`. See [GET /api/roles/](#response--200-ok) for the field list.
+
+<RequestExample>
+```bash cURL
+curl --request GET \
+  --url https://api.example.com/api/roles/4 \
+  --header 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "id": 4,
+  "nombre": "Supervisor",
+  "permisos": []
+}
+```
+
+```json 404
+{ "detail": "Rol no encontrado" }
+```
+</ResponseExample>
+
+---
+
+## PATCH /api/roles/{rol_id}
+
+Update a role's name. Invalidates the permission cache for the role.
+
+**Authentication:** `Bearer` token required.  
+**Permission required:** `roles:write`
+
+### Path parameters
+
+<ParamField path="rol_id" type="number" required>
+  ID of the role to update.
+</ParamField>
+
+### Request body
+
+<ParamField body="nombre" type="string">
+  New unique name for the role. Maximum 50 characters.
+</ParamField>
+
+### Response — 200 OK
+
+Returns the updated `RolResponse`.
+
+<RequestExample>
+```bash cURL
+curl --request PATCH \
+  --url https://api.example.com/api/roles/4 \
+  --header 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...' \
+  --header 'Content-Type: application/json' \
+  --data '{"nombre": "Coordinador"}'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "id": 4,
+  "nombre": "Coordinador",
+  "permisos": []
+}
+```
+</ResponseExample>
+
+---
+
+## DELETE /api/roles/{rol_id}
+
+Delete a role permanently. The role must have no users assigned to it — reassign any existing users before deleting.
+
+**Authentication:** `Bearer` token required.  
+**Permission required:** `roles:delete`
+
+<Warning>
+  This operation is permanent. If any users are still assigned to the role the request will return `409 Conflict`. Reassign those users to a different role first.
+</Warning>
+
+### Path parameters
+
+<ParamField path="rol_id" type="number" required>
+  ID of the role to delete.
+</ParamField>
+
+### Response — 204 No Content
+
+No response body is returned on success.
+
+<RequestExample>
+```bash cURL
+curl --request DELETE \
+  --url https://api.example.com/api/roles/4 \
+  --header 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 409
+{
+  "detail": "No se puede eliminar el rol: tiene usuarios asociados. Reasigna esos usuarios a otro rol antes de borrarlo."
+}
+```
+</ResponseExample>
+
+---
+
+## GET /api/roles/permisos/all
+
+List all permissions across all roles, with optional filters.
+
+**Authentication:** `Bearer` token required.  
+**Permission required:** `roles:read`
+
+### Query parameters
+
+<ParamField query="rol_id" type="number">
+  Filter permissions to a specific role.
+</ParamField>
+
+<ParamField query="recurso" type="string">
+  Filter permissions to a specific resource name (e.g. `usuarios`, `ordenes`).
+</ParamField>
+
+### Response — 200 OK
+
+Returns an array of `PermisoResponse` objects.
+
+<ResponseField name="id" type="number" required>
+  Permission ID.
+</ResponseField>
+
+<ResponseField name="rol_id" type="number" required>
+  ID of the role this permission belongs to.
+</ResponseField>
+
+<ResponseField name="recurso" type="string" required>
+  Resource name.
+</ResponseField>
+
+<ResponseField name="accion" type="string" required>
+  Granted action (`read`, `write`, `delete`, or `*`).
+</ResponseField>
+
+<RequestExample>
+```bash cURL
+curl --request GET \
+  --url 'https://api.example.com/api/roles/permisos/all?recurso=ordenes' \
+  --header 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+[
+  { "id": 5, "rol_id": 3, "recurso": "ordenes", "accion": "read" },
+  { "id": 6, "rol_id": 3, "recurso": "ordenes", "accion": "write" }
+]
+```
+</ResponseExample>
+
+---
+
+## GET /api/roles/permisos/{permiso_id}
+
+Retrieve a single permission by ID.
+
+**Authentication:** `Bearer` token required.  
+**Permission required:** `roles:read`
+
+### Path parameters
+
+<ParamField path="permiso_id" type="number" required>
+  ID of the permission to retrieve.
+</ParamField>
+
+### Response — 200 OK
+
+Returns a `PermisoResponse`. See [GET /api/roles/permisos/all](#response--200-ok-5) for the field list.
+
+<RequestExample>
+```bash cURL
+curl --request GET \
+  --url https://api.example.com/api/roles/permisos/5 \
+  --header 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{ "id": 5, "rol_id": 3, "recurso": "ordenes", "accion": "read" }
+```
+
+```json 404
+{ "detail": "Permiso no encontrado" }
+```
+</ResponseExample>
+
+---
+
+## POST /api/roles/{rol_id}/permisos
+
+Add a permission to a role. The combination of `rol_id`, `recurso`, and `accion` must be unique. Invalidates the permission cache for the role.
+
+**Authentication:** `Bearer` token required.  
+**Permission required:** `roles:write`
+
+### Path parameters
+
+<ParamField path="rol_id" type="number" required>
+  ID of the role to add the permission to.
+</ParamField>
+
+### Request body
+
+<ParamField body="recurso" type="string" required>
+  Resource name the permission applies to (e.g. `usuarios`, `ordenes`, or `*`).
+</ParamField>
+
+<ParamField body="accion" type="string" required>
+  Action to grant: `read`, `write`, `delete`, or `*`.
+</ParamField>
+
+### Response — 201 Created
+
+Returns the created `PermisoResponse`.
+
+<RequestExample>
+```bash cURL
+curl --request POST \
+  --url https://api.example.com/api/roles/3/permisos \
+  --header 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...' \
+  --header 'Content-Type: application/json' \
+  --data '{"recurso": "ordenes", "accion": "write"}'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 201
+{ "id": 7, "rol_id": 3, "recurso": "ordenes", "accion": "write" }
+```
+
+```json 400
+{ "detail": "Permiso ya existe para este rol" }
+```
+</ResponseExample>
+
+---
+
+## DELETE /api/roles/{rol_id}/permisos/{permiso_id}
+
+Remove a permission from a role. Invalidates the permission cache for the role.
+
+**Authentication:** `Bearer` token required.  
+**Permission required:** `roles:write`
+
+### Path parameters
+
+<ParamField path="rol_id" type="number" required>
+  ID of the role that owns the permission.
+</ParamField>
+
+<ParamField path="permiso_id" type="number" required>
+  ID of the permission to remove.
+</ParamField>
+
+### Response — 204 No Content
+
+No response body is returned on success.
+
+<RequestExample>
+```bash cURL
+curl --request DELETE \
+  --url https://api.example.com/api/roles/3/permisos/7 \
+  --header 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 404
+{ "detail": "Permiso no encontrado" }
+```
+</ResponseExample>

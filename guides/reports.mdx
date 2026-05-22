@@ -1,0 +1,213 @@
+---
+title: "Analytics and reporting endpoints in Rappi2"
+description: "Query KPIs, SLA compliance, driver efficiency, sales series, incident summaries, and geographic distribution through the Rappi2 reporting API."
+---
+
+Rappi2 provides a rich set of read-only analytics endpoints under `/api/reportes`. Reports span both the Postgres relational store (orders, assignments, drivers, payments) and the MongoDB collections (GPS tracking, geofences). All endpoints require the `reportes:read` permission.
+
+---
+
+## Available endpoints
+
+| Endpoint | Description |
+|---|---|
+| `GET /api/reportes/dashboard` | Overall KPIs: entity counts, orders by state, fleet availability, last-24 h revenue, and high-severity incidents |
+| `GET /api/reportes/ventas` | Payment revenue aggregated by day or month, with total invoiced amount |
+| `GET /api/reportes/top-clientes` | Top clients ranked by confirmed payment revenue |
+| `GET /api/reportes/conductores` | Per-driver metrics: total assignments, completed, in-progress, and incident count |
+| `GET /api/reportes/conductores/eficiencia` | Driver efficiency: deliveries/hour and incident rate, sorted by efficiency |
+| `GET /api/reportes/incidencias` | Incident counts broken down by severity level and incident type |
+| `GET /api/reportes/tiempos-entrega` | Delivery time stats (avg, min, max, mean in minutes) across finalised assignments |
+| `GET /api/reportes/sla-entregas` | SLA compliance percentage plus p50/p95 delivery time percentiles |
+| `GET /api/reportes/operativo` | Real-time operational KPIs crossing Postgres and MongoDB |
+| `GET /api/reportes/evidencias` | Evidence file stats: count by type, GridFS storage usage, and top incidents |
+| `GET /api/reportes/notificaciones` | Notification stats: read vs. pending, broken down by recipient type |
+| `GET /api/reportes/distribucion-geografica` | Top districts by order volume for both origin and destination |
+| `GET /api/reportes/cliente/{id}/resumen` | 360-degree view of a single client: orders by state, revenue, and invoiced amount |
+| `GET /api/reportes/asignacion/{id}/completo` | 360-degree view of a single assignment: incidents, GPS stats, evidence, and notifications |
+
+---
+
+## Dashboard
+
+The dashboard aggregates core KPIs in a single call, making it suitable as the data source for an operations home screen.
+
+**Required permission:** `reportes:read`
+
+```bash
+curl "https://api.rappi2.example/api/reportes/dashboard" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Sample response:**
+
+```json
+{
+  "totales": {
+    "clientes": 318,
+    "usuarios": 24,
+    "conductores": 47,
+    "vehiculos": 43,
+    "ordenes": 12480,
+    "asignaciones": 11902
+  },
+  "ordenes_por_estado": {
+    "Pendiente": 12,
+    "En Proceso": 8,
+    "En Tránsito": 21,
+    "Entregado": 12380,
+    "Cancelado": 59
+  },
+  "conductores_por_disponibilidad": {
+    "Disponible": 29,
+    "Ocupado": 16,
+    "Inactivo": 2
+  },
+  "vehiculos_por_estado": {
+    "Operativo": 38,
+    "Mantenimiento": 4,
+    "Inactivo": 1
+  },
+  "recaudacion_ultimas_24h": 14820.50,
+  "incidencias_severidad_alta": 3
+}
+```
+
+`incidencias_severidad_alta` counts incidents with `severidad >= 3`. `recaudacion_ultimas_24h` sums only payments in the `"Pagado"` state from the past 24 hours.
+
+---
+
+## SLA report
+
+Measure on-time delivery performance against a configurable SLA target. The `sla_minutos` parameter defines the threshold; any assignment completed within that window counts as on-time.
+
+**Required permission:** `reportes:read`
+
+```bash
+curl "https://api.rappi2.example/api/reportes/sla-entregas\
+?desde=2025-06-01T00:00:00Z\
+&hasta=2025-06-30T23:59:59Z\
+&sla_minutos=60" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Response `200 OK`:**
+
+```json
+{
+  "desde": "2025-06-01T00:00:00Z",
+  "hasta": "2025-06-30T23:59:59Z",
+  "sla_minutos": 60,
+  "total_entregas": 1140,
+  "on_time": 1026,
+  "off_time": 114,
+  "on_time_pct": 90.0,
+  "p50_minutos": 38.42,
+  "p95_minutos": 72.15
+}
+```
+
+| Parameter | Type | Default | Range | Notes |
+|---|---|---|---|---|
+| `desde` | datetime | none | — | ISO 8601, filters by `fecha_fin >= desde` |
+| `hasta` | datetime | none | — | ISO 8601, filters by `fecha_fin <= hasta` |
+| `sla_minutos` | integer | `60` | `1 – 1440` | SLA target in minutes |
+
+Only `Finalizada` assignments with both `fecha_inicio` and `fecha_fin` populated are included. `p50_minutos` and `p95_minutos` are computed using PostgreSQL `percentile_cont`.
+
+---
+
+## Operational report
+
+The operational report is the only endpoint that reads from both Postgres and MongoDB in a single request. It shows the live state of the fleet: active assignments, drivers with a recent GPS ping, and assignments that have gone silent.
+
+**Required permission:** `reportes:read`
+
+```bash
+curl "https://api.rappi2.example/api/reportes/operativo\
+?ventana_minutos=5" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Response `200 OK`:**
+
+```json
+{
+  "ventana_minutos": 5,
+  "asignaciones_en_curso": 21,
+  "conductores_ocupados_postgres": 21,
+  "conductores_online_mongo": 18,
+  "asignaciones_activas_sin_tracking": 3,
+  "asignaciones_con_ping_hoy": 74,
+  "geocercas_activas": 62,
+  "incidencias_ultimas_24h": 5
+}
+```
+
+| Field | Source | Notes |
+|---|---|---|
+| `asignaciones_en_curso` | Postgres | Assignments in `EnCurso` state |
+| `conductores_ocupados_postgres` | Postgres | Conductors with `disponibilidad = "Ocupado"` |
+| `conductores_online_mongo` | MongoDB `gps_tracking` | Distinct `conductor_id` values with a ping inside `ventana_minutos` |
+| `asignaciones_activas_sin_tracking` | Both | `EnCurso` assignments with no recent ping |
+| `asignaciones_con_ping_hoy` | MongoDB | Distinct assignments with any ping since midnight UTC |
+| `geocercas_activas` | MongoDB | Documents in `geocercas` with `activa: true` |
+| `incidencias_ultimas_24h` | Postgres | All incidents recorded in the past 24 hours |
+
+The `ventana_minutos` parameter (default `5`, max `60`) controls what counts as "online" for both the `conductores_online_mongo` count and the `asignaciones_activas_sin_tracking` calculation.
+
+---
+
+## Other report endpoints
+
+### Sales report
+
+```bash
+curl "https://api.rappi2.example/api/reportes/ventas\
+?granularidad=dia\
+&desde=2025-06-01T00:00:00Z\
+&hasta=2025-06-07T23:59:59Z" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+`granularidad` accepts `"dia"` (default) or `"mes"`. Returns a `series` array with one entry per period, plus `total_recaudado` and `total_facturado` for the window.
+
+### Driver efficiency
+
+```bash
+curl "https://api.rappi2.example/api/reportes/conductores/eficiencia\
+?desde=2025-06-01T00:00:00Z\
+&limit=20" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Returns one record per active driver with `entregas_finalizadas`, `horas_activas`, `entregas_por_hora`, `incidencias`, `incidencias_severas`, and `tasa_incidencias`. Sorted by `entregas_por_hora` descending (null last).
+
+### Geographic distribution
+
+```bash
+curl "https://api.rappi2.example/api/reportes/distribucion-geografica\
+?top=10\
+&desde=2025-06-01T00:00:00Z" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Returns `top_origen` and `top_destino` arrays, each listing districts ranked by order volume. Uses the `distrito_origen` and `distrito_destino` fields on the `Orden` model.
+
+### 360-degree client view
+
+```bash
+curl "https://api.rappi2.example/api/reportes/cliente/42/resumen" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Returns the client record alongside `total_ordenes`, `ordenes_por_estado`, `total_recaudado` (confirmed payments), and `total_facturado`.
+
+### 360-degree assignment view
+
+```bash
+curl "https://api.rappi2.example/api/reportes/asignacion/55/completo" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Crosses Postgres (assignment record, incident counts by severity) with MongoDB (GPS tracking statistics, evidence counts by type, notification count to the driver).

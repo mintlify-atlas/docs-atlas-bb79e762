@@ -1,0 +1,543 @@
+---
+title: "Tracking API — GPS pings and geofences"
+description: "Record real-time GPS positions, query ping history and statistics, find nearby drivers, and manage GeoJSON polygon geofences per route."
+---
+
+The Tracking API covers two concerns: GPS pings recorded by drivers during active assignments, and geofences that define delivery corridors or restricted zones. Pings are stored in the `gps_tracking` MongoDB collection with a `2dsphere` index on `location`. Geofences are stored in the `geocercas` collection and can be queried for spatial containment.
+
+<Info>All endpoints require a valid Bearer token. GPS endpoints use the `tracking` resource; geofence endpoints use the `geocercas` resource.</Info>
+
+---
+
+## GPS endpoints
+
+### Record GPS ping
+
+`POST /tracking/ping`
+
+Stores a single GPS position emitted by a driver's device. If `timestamp` is omitted, the server time is used.
+
+**Permission:** `tracking:write`
+
+<ParamField body="asignacion_id" type="integer" required>
+  Active assignment ID this ping belongs to.
+</ParamField>
+
+<ParamField body="conductor_id" type="integer" required>
+  Driver (conductor) ID.
+</ParamField>
+
+<ParamField body="vehiculo_placa" type="string" required>
+  Vehicle licence plate.
+</ParamField>
+
+<ParamField body="lon" type="number" required>
+  Longitude (`-180` to `180`).
+</ParamField>
+
+<ParamField body="lat" type="number" required>
+  Latitude (`-90` to `90`).
+</ParamField>
+
+<ParamField body="speed_kmh" type="number">
+  Current speed in km/h.
+</ParamField>
+
+<ParamField body="heading" type="number">
+  Bearing in degrees (`0`–`360`).
+</ParamField>
+
+<ParamField body="accuracy_m" type="number">
+  GPS accuracy radius in metres.
+</ParamField>
+
+<ParamField body="timestamp" type="string">
+  ISO 8601 datetime. Defaults to server time when omitted.
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X POST "https://api.rappi2.com/tracking/ping" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "asignacion_id": 101,
+    "conductor_id": 5,
+    "vehiculo_placa": "ABC-123",
+    "lon": -77.0282,
+    "lat": -12.0432,
+    "speed_kmh": 35.5,
+    "heading": 180.0,
+    "accuracy_m": 4.2
+  }'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 201
+{
+  "id": "664f1a2b3c4d5e6f7a8b9c0d",
+  "asignacion_id": 101,
+  "conductor_id": 5,
+  "vehiculo_placa": "ABC-123",
+  "location": {
+    "type": "Point",
+    "coordinates": [-77.0282, -12.0432]
+  },
+  "speed_kmh": 35.5,
+  "heading": 180.0,
+  "accuracy_m": 4.2,
+  "timestamp": "2026-05-22T14:00:00Z"
+}
+```
+</ResponseExample>
+
+---
+
+### List pings for assignment
+
+`GET /tracking/asignacion/{asignacion_id}`
+
+Returns up to `limit` pings for an assignment, ordered by `timestamp` descending.
+
+**Permission:** `tracking:read`
+
+<ParamField path="asignacion_id" type="integer" required>
+  Assignment ID.
+</ParamField>
+
+<ParamField query="desde" type="string">
+  ISO 8601 datetime — return only pings at or after this time.
+</ParamField>
+
+<ParamField query="hasta" type="string">
+  ISO 8601 datetime — return only pings at or before this time.
+</ParamField>
+
+<ParamField query="limit" type="integer" default="500">
+  Maximum number of pings to return (max `2000`).
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X GET "https://api.rappi2.com/tracking/asignacion/101?limit=100&desde=2026-05-22T12:00:00Z" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+[
+  {
+    "id": "664f1a2b3c4d5e6f7a8b9c0d",
+    "asignacion_id": 101,
+    "conductor_id": 5,
+    "vehiculo_placa": "ABC-123",
+    "location": {"type": "Point", "coordinates": [-77.0282, -12.0432]},
+    "speed_kmh": 35.5,
+    "heading": 180.0,
+    "accuracy_m": 4.2,
+    "timestamp": "2026-05-22T14:00:00Z"
+  }
+]
+```
+</ResponseExample>
+
+---
+
+### Get most recent ping
+
+`GET /tracking/asignacion/{asignacion_id}/ultimo`
+
+Returns the single most recent GPS ping for an assignment.
+
+**Permission:** `tracking:read`
+
+<ParamField path="asignacion_id" type="integer" required>
+  Assignment ID.
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X GET "https://api.rappi2.com/tracking/asignacion/101/ultimo" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "id": "664f1a2b3c4d5e6f7a8b9c0d",
+  "asignacion_id": 101,
+  "conductor_id": 5,
+  "vehiculo_placa": "ABC-123",
+  "location": {"type": "Point", "coordinates": [-77.0282, -12.0432]},
+  "speed_kmh": 35.5,
+  "heading": 180.0,
+  "accuracy_m": 4.2,
+  "timestamp": "2026-05-22T14:00:00Z"
+}
+```
+</ResponseExample>
+
+---
+
+### Assignment statistics
+
+`GET /tracking/asignacion/{asignacion_id}/estadisticas`
+
+Computes total distance (via the Haversine formula over sequential pings), duration, and average speed for an assignment.
+
+**Permission:** `tracking:read`
+
+<ParamField path="asignacion_id" type="integer" required>
+  Assignment ID.
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X GET "https://api.rappi2.com/tracking/asignacion/101/estadisticas" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "asignacion_id": 101,
+  "pings": 48,
+  "distancia_total_m": 9830.45,
+  "distancia_total_km": 9.830,
+  "duracion_segundos": 1350.0,
+  "duracion_minutos": 22.5,
+  "velocidad_promedio_kmh": 26.21,
+  "primer_ping": "2026-05-22T13:37:30Z",
+  "ultimo_ping": "2026-05-22T14:00:00Z"
+}
+```
+</ResponseExample>
+
+<ResponseField name="asignacion_id" type="integer" required>Assignment ID.</ResponseField>
+<ResponseField name="pings" type="integer" required>Total number of pings recorded.</ResponseField>
+<ResponseField name="distancia_total_m" type="number" required>Distance in metres.</ResponseField>
+<ResponseField name="distancia_total_km" type="number" required>Distance in kilometres.</ResponseField>
+<ResponseField name="duracion_segundos" type="number" required>Elapsed time in seconds between the first and last ping.</ResponseField>
+<ResponseField name="duracion_minutos" type="number" required>Elapsed time in minutes.</ResponseField>
+<ResponseField name="velocidad_promedio_kmh" type="number">Average speed in km/h. `null` when duration is zero.</ResponseField>
+<ResponseField name="primer_ping" type="string">Timestamp of the first recorded ping.</ResponseField>
+<ResponseField name="ultimo_ping" type="string">Timestamp of the most recent recorded ping.</ResponseField>
+
+---
+
+### Find nearby drivers
+
+`GET /tracking/conductores-cerca`
+
+Uses a MongoDB `$geoNear` aggregation over the `gps_tracking` collection to return the most recent ping of each driver within `radio_m` metres whose last ping falls within the `ventana_min` time window.
+
+**Permission:** `tracking:read`
+
+<ParamField query="lon" type="number" required>
+  Centre longitude (`-180` to `180`).
+</ParamField>
+
+<ParamField query="lat" type="number" required>
+  Centre latitude (`-90` to `90`).
+</ParamField>
+
+<ParamField query="radio_m" type="integer" default="2000">
+  Search radius in metres (`10`–`50000`).
+</ParamField>
+
+<ParamField query="ventana_min" type="integer" default="5">
+  Only consider drivers whose last ping is within this many minutes (`1`–`60`).
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X GET "https://api.rappi2.com/tracking/conductores-cerca?lon=-77.03&lat=-12.04&radio_m=3000&ventana_min=10" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+[
+  {
+    "conductor_id": 5,
+    "ultimo_ping_id": "664f1a2b3c4d5e6f7a8b9c0d",
+    "asignacion_id": 101,
+    "vehiculo_placa": "ABC-123",
+    "location": {"type": "Point", "coordinates": [-77.0282, -12.0432]},
+    "speed_kmh": 35.5,
+    "timestamp": "2026-05-22T14:00:00Z",
+    "distance_m": 412.7
+  }
+]
+```
+</ResponseExample>
+
+---
+
+## Geofence endpoints
+
+### Create geofence
+
+`POST /geocercas`
+
+Creates a polygon geofence stored in the `geocercas` MongoDB collection. Geometry must be a valid GeoJSON Polygon coordinate array.
+
+**Permission:** `geocercas:write`
+
+<ParamField body="tipo" type="string" required>
+  Geofence type: `ruta_buffer`, `zona_entrega`, or `prohibida`.
+</ParamField>
+
+<ParamField body="coordinates" type="array" required>
+  GeoJSON Polygon coordinates: an array of rings, each ring being an array of `[lon, lat]` pairs. The first and last positions of each ring must be identical (closed ring).
+</ParamField>
+
+<ParamField body="ruta_id" type="integer">
+  Route ID to link this geofence to.
+</ParamField>
+
+<ParamField body="orden_id" type="integer">
+  Order ID to link this geofence to.
+</ParamField>
+
+<ParamField body="tolerance_m" type="integer">
+  Buffer tolerance in metres used when generating this geofence programmatically.
+</ParamField>
+
+<ParamField body="activa" type="boolean" default="true">
+  Whether the geofence is active.
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X POST "https://api.rappi2.com/geocercas" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tipo": "zona_entrega",
+    "ruta_id": 7,
+    "activa": true,
+    "coordinates": [[
+      [-77.030, -12.040],
+      [-77.025, -12.040],
+      [-77.025, -12.045],
+      [-77.030, -12.045],
+      [-77.030, -12.040]
+    ]]
+  }'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 201
+{
+  "id": "664e9f1a2b3c4d5e6f7a8b9c",
+  "ruta_id": 7,
+  "orden_id": null,
+  "tipo": "zona_entrega",
+  "geometry": {
+    "type": "Polygon",
+    "coordinates": [[[-77.030,-12.040],[-77.025,-12.040],[-77.025,-12.045],[-77.030,-12.045],[-77.030,-12.040]]]
+  },
+  "tolerance_m": null,
+  "activa": true,
+  "created_at": "2026-05-22T14:05:00Z"
+}
+```
+</ResponseExample>
+
+---
+
+### List geofences
+
+`GET /geocercas`
+
+Returns all geofences, optionally filtered by route or active status.
+
+**Permission:** `geocercas:read`
+
+<ParamField query="ruta_id" type="integer">
+  Filter by route ID.
+</ParamField>
+
+<ParamField query="activa" type="boolean">
+  Filter by active status.
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X GET "https://api.rappi2.com/geocercas?ruta_id=7&activa=true" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+---
+
+### Geofences containing a point
+
+`GET /geocercas/contiene`
+
+Returns all **active** geofences whose polygon contains the given point. Uses MongoDB `$geoIntersects`.
+
+**Permission:** `geocercas:read`
+
+<ParamField query="lon" type="number" required>
+  Longitude of the point to test (`-180` to `180`).
+</ParamField>
+
+<ParamField query="lat" type="number" required>
+  Latitude of the point to test (`-90` to `90`).
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X GET "https://api.rappi2.com/geocercas/contiene?lon=-77.0282&lat=-12.0432" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+[
+  {
+    "id": "664e9f1a2b3c4d5e6f7a8b9c",
+    "ruta_id": 7,
+    "orden_id": null,
+    "tipo": "zona_entrega",
+    "geometry": {"type": "Polygon", "coordinates": [[...]]},
+    "tolerance_m": null,
+    "activa": true,
+    "created_at": "2026-05-22T14:05:00Z"
+  }
+]
+```
+</ResponseExample>
+
+---
+
+### Get geofence
+
+`GET /geocercas/{geocerca_id}`
+
+Retrieve a single geofence by its MongoDB ObjectId.
+
+**Permission:** `geocercas:read`
+
+<ParamField path="geocerca_id" type="string" required>
+  MongoDB ObjectId of the geofence.
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X GET "https://api.rappi2.com/geocercas/664e9f1a2b3c4d5e6f7a8b9c" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+---
+
+### Update geofence
+
+`PATCH /geocercas/{geocerca_id}`
+
+Partially update a geofence's type, coordinates, tolerance, or active status.
+
+**Permission:** `geocercas:write`
+
+<ParamField path="geocerca_id" type="string" required>
+  MongoDB ObjectId of the geofence.
+</ParamField>
+
+<ParamField body="tipo" type="string">
+  New type: `ruta_buffer`, `zona_entrega`, or `prohibida`.
+</ParamField>
+
+<ParamField body="coordinates" type="array">
+  Replacement GeoJSON Polygon coordinates.
+</ParamField>
+
+<ParamField body="tolerance_m" type="integer">
+  Updated buffer tolerance in metres.
+</ParamField>
+
+<ParamField body="activa" type="boolean">
+  Enable or disable the geofence.
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X PATCH "https://api.rappi2.com/geocercas/664e9f1a2b3c4d5e6f7a8b9c" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"activa": false}'
+```
+</RequestExample>
+
+---
+
+### Delete (deactivate) geofence
+
+`DELETE /geocercas/{geocerca_id}`
+
+Sets `activa = false` on the geofence. The document is retained in MongoDB.
+
+**Permission:** `geocercas:delete`
+
+<Note>This is a soft delete — the geofence is deactivated, not removed from the database.</Note>
+
+<ParamField path="geocerca_id" type="string" required>
+  MongoDB ObjectId of the geofence.
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X DELETE "https://api.rappi2.com/geocercas/664e9f1a2b3c4d5e6f7a8b9c" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 204
+```
+</ResponseExample>
+
+---
+
+## Geofence response schema
+
+<ResponseField name="id" type="string" required>
+  MongoDB ObjectId as a hex string.
+</ResponseField>
+
+<ResponseField name="ruta_id" type="integer">
+  Route linked to this geofence.
+</ResponseField>
+
+<ResponseField name="orden_id" type="integer">
+  Order linked to this geofence.
+</ResponseField>
+
+<ResponseField name="tipo" type="string" required>
+  One of `ruta_buffer`, `zona_entrega`, `prohibida`.
+</ResponseField>
+
+<ResponseField name="geometry" type="object" required>
+  GeoJSON Polygon object with `type` and `coordinates`.
+</ResponseField>
+
+<ResponseField name="tolerance_m" type="integer">
+  Buffer tolerance applied when the geofence was generated automatically.
+</ResponseField>
+
+<ResponseField name="activa" type="boolean" required>
+  Whether the geofence is currently active.
+</ResponseField>
+
+<ResponseField name="created_at" type="string" required>
+  ISO 8601 creation timestamp.
+</ResponseField>

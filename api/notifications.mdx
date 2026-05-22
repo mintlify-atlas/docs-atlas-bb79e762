@@ -1,0 +1,216 @@
+---
+title: "Notifications API — send and manage alerts"
+description: "Create notifications for platform users or clients, list your own inbox with read/unread filtering, and mark notifications as read or delete them."
+---
+
+The Notifications API stores alerts in the `notificaciones` MongoDB collection. Each notification targets either a platform user (`destinatario_tipo: "usuario"`) or a client (`destinatario_tipo: "cliente"`). The `/mias` and `/{id}/leer` / `/{id}` (DELETE) endpoints are caller-scoped — they operate only on notifications belonging to the authenticated user.
+
+<Info>All endpoints require a valid Bearer token. Creating notifications requires `notificaciones:write`. Reading and mutating your own inbox requires only authentication.</Info>
+
+---
+
+## Create notification
+
+`POST /notificaciones`
+
+Create a notification and deliver it to a specific user or client.
+
+**Permission:** `notificaciones:write`
+
+<ParamField body="destinatario_tipo" type="string" required>
+  Target audience: `usuario` or `cliente`.
+</ParamField>
+
+<ParamField body="destinatario_id" type="integer" required>
+  ID of the user or client to notify (resolved against `destinatario_tipo`).
+</ParamField>
+
+<ParamField body="tipo" type="string" required>
+  Notification category label (e.g. `"entrega_completada"`, `"incidencia_alta"`).
+</ParamField>
+
+<ParamField body="titulo" type="string" required>
+  Short title displayed in the notification list.
+</ParamField>
+
+<ParamField body="mensaje" type="string" required>
+  Full notification body text.
+</ParamField>
+
+<ParamField body="metadata" type="object" default="{}">
+  Arbitrary key-value payload for the receiving application (e.g. `{"orden_id": 42}`).
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X POST "https://api.rappi2.com/notificaciones" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "destinatario_tipo": "usuario",
+    "destinatario_id": 5,
+    "tipo": "incidencia_alta",
+    "titulo": "Incidencia severa registrada",
+    "mensaje": "Se registró una incidencia de severidad 5 en la asignación #101.",
+    "metadata": {"incidencia_id": 15, "asignacion_id": 101}
+  }'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 201
+{
+  "id": "664f3c4d5e6f7a8b9c0d1e2f",
+  "destinatario_tipo": "usuario",
+  "destinatario_id": 5,
+  "tipo": "incidencia_alta",
+  "titulo": "Incidencia severa registrada",
+  "mensaje": "Se registró una incidencia de severidad 5 en la asignación #101.",
+  "metadata": {"incidencia_id": 15, "asignacion_id": 101},
+  "leida": false,
+  "fecha": "2026-05-22T14:15:00Z"
+}
+```
+</ResponseExample>
+
+---
+
+## List my notifications
+
+`GET /notificaciones/mias`
+
+Returns notifications addressed to the authenticated caller, resolved automatically from the caller's identity. If the caller has a `cliente_id`, the inbox uses `destinatario_tipo: "cliente"`; otherwise it uses `destinatario_tipo: "usuario"`.
+
+**Permission:** authenticated (no additional permission required)
+
+<ParamField query="leida" type="boolean">
+  Filter by read status. Omit to return both read and unread.
+</ParamField>
+
+<ParamField query="skip" type="integer" default="0">
+  Pagination offset.
+</ParamField>
+
+<ParamField query="limit" type="integer" default="50">
+  Maximum notifications to return (max `200`).
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X GET "https://api.rappi2.com/notificaciones/mias?leida=false&limit=20" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+[
+  {
+    "id": "664f3c4d5e6f7a8b9c0d1e2f",
+    "destinatario_tipo": "usuario",
+    "destinatario_id": 5,
+    "tipo": "incidencia_alta",
+    "titulo": "Incidencia severa registrada",
+    "mensaje": "Se registró una incidencia de severidad 5 en la asignación #101.",
+    "metadata": {"incidencia_id": 15, "asignacion_id": 101},
+    "leida": false,
+    "fecha": "2026-05-22T14:15:00Z"
+  }
+]
+```
+</ResponseExample>
+
+---
+
+## Mark notification as read
+
+`PATCH /notificaciones/{notif_id}/leer`
+
+Marks a notification as read. The caller must be the notification's intended recipient.
+
+**Permission:** authenticated (ownership enforced)
+
+<ParamField path="notif_id" type="string" required>
+  MongoDB ObjectId of the notification.
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X PATCH "https://api.rappi2.com/notificaciones/664f3c4d5e6f7a8b9c0d1e2f/leer" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "message": "Notificacion marcada como leida"
+}
+```
+</ResponseExample>
+
+---
+
+## Delete notification
+
+`DELETE /notificaciones/{notif_id}`
+
+Permanently deletes a notification. The caller must be the notification's intended recipient.
+
+**Permission:** authenticated (ownership enforced)
+
+<ParamField path="notif_id" type="string" required>
+  MongoDB ObjectId of the notification.
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X DELETE "https://api.rappi2.com/notificaciones/664f3c4d5e6f7a8b9c0d1e2f" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 204
+```
+</ResponseExample>
+
+---
+
+## Notification response schema
+
+<ResponseField name="id" type="string" required>
+  MongoDB ObjectId as a hex string.
+</ResponseField>
+
+<ResponseField name="destinatario_tipo" type="string" required>
+  Recipient type: `usuario` or `cliente`.
+</ResponseField>
+
+<ResponseField name="destinatario_id" type="integer" required>
+  ID of the recipient user or client.
+</ResponseField>
+
+<ResponseField name="tipo" type="string" required>
+  Notification category label.
+</ResponseField>
+
+<ResponseField name="titulo" type="string" required>
+  Short notification title.
+</ResponseField>
+
+<ResponseField name="mensaje" type="string" required>
+  Full notification body.
+</ResponseField>
+
+<ResponseField name="metadata" type="object" required>
+  Arbitrary key-value payload attached to the notification. Defaults to `{}`.
+</ResponseField>
+
+<ResponseField name="leida" type="boolean" required>
+  Whether the notification has been marked as read.
+</ResponseField>
+
+<ResponseField name="fecha" type="string" required>
+  ISO 8601 creation timestamp.
+</ResponseField>

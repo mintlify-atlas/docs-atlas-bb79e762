@@ -1,0 +1,312 @@
+---
+title: "Assignments API — assign drivers to orders"
+description: "Create driver-to-order assignments, start and finish deliveries through a guarded state machine, and cancel assignments with full tracking cleanup."
+---
+
+The Assignments API is the operational core of the Rappi2 logistics platform. An assignment ties a single order, driver, and vehicle together for one delivery run. Creating an assignment enforces business rules across all three resources; the two lifecycle transitions (`/iniciar` and `/finalizar`) drive state changes on both the order and the driver automatically.
+
+---
+
+## Business rules
+
+Before an assignment can be created, all three referenced resources must satisfy the following conditions simultaneously:
+
+| Resource | Required condition |
+|---|---|
+| Order (`orden`) | `estado = Pendiente` |
+| Driver (`conductor`) | `activo = true` and `disponibilidad = Disponible` |
+| Vehicle (`vehiculo`) | `activo = true` and `estado = Operativo` |
+
+Any violation returns `400` with a descriptive message.
+
+---
+
+## State machine
+
+### Assignment states
+
+| State | Description |
+|---|---|
+| `Asignada` | Assignment created; driver and vehicle are booked. |
+| `EnCurso` | Delivery in progress; driver has left the pick-up point. |
+| `Finalizada` | Delivery confirmed; driver is free again. |
+| `Cancelada` | Assignment cancelled before completion. |
+
+### Side effects on related resources
+
+```
+POST /asignaciones (crear)
+  asignacion.estado  ──► Asignada
+  orden.estado       ──► En Proceso
+  conductor.disponibilidad ──► Ocupado
+
+PATCH /asignaciones/{id}/iniciar
+  asignacion.estado  ──► EnCurso
+  orden.estado       ──► En Tránsito
+  asignacion.fecha_inicio = now()
+
+PATCH /asignaciones/{id}/finalizar
+  asignacion.estado  ──► Finalizada
+  orden.estado       ──► Entregado
+  conductor.disponibilidad ──► Disponible
+  asignacion.fecha_fin = now()
+```
+
+<Warning>
+An assignment with `estado = EnCurso` cannot be deleted. Call `/finalizar` first, or wait for it to complete.
+</Warning>
+
+---
+
+## List assignments
+
+<ParamField path="GET /api/asignaciones" type="string" />
+
+Returns a paginated list of assignments, optionally filtered by state or driver.
+
+**Required permission:** `asignaciones:read`
+
+### Query parameters
+
+<ParamField query="skip" type="integer" default="0">
+  Number of records to skip for pagination.
+</ParamField>
+
+<ParamField query="limit" type="integer" default="50">
+  Maximum number of records to return. Hard cap: 200.
+</ParamField>
+
+<ParamField query="estado" type="string">
+  Filter by assignment state: `Asignada`, `EnCurso`, `Finalizada`, or `Cancelada`.
+</ParamField>
+
+<ParamField query="conductor_id" type="integer">
+  Return only assignments for this driver.
+</ParamField>
+
+### Response `200`
+
+Array of assignment objects.
+
+<ResponseField name="id" type="integer" required>
+  Unique assignment identifier.
+</ResponseField>
+
+<ResponseField name="orden_id" type="integer" required>
+  ID of the delivery order.
+</ResponseField>
+
+<ResponseField name="conductor_id" type="integer" required>
+  ID of the assigned driver.
+</ResponseField>
+
+<ResponseField name="vehiculo_placa" type="string" required>
+  Licence plate of the assigned vehicle.
+</ResponseField>
+
+<ResponseField name="estado" type="string" required>
+  Current assignment state.
+</ResponseField>
+
+<ResponseField name="fecha_inicio" type="string (datetime)">
+  Timestamp when `/iniciar` was called. `null` until then.
+</ResponseField>
+
+<ResponseField name="fecha_fin" type="string (datetime)">
+  Timestamp when `/finalizar` was called. `null` until then.
+</ResponseField>
+
+```bash
+curl "https://api.rappi2.com/api/asignaciones?estado=Asignada" \
+  -H "Authorization: Bearer <token>"
+```
+
+---
+
+## Create an assignment
+
+<ParamField path="POST /api/asignaciones" type="string" />
+
+Creates a new assignment. All three business-rule conditions (order `Pendiente`, driver `Disponible`, vehicle `Operativo`) are validated atomically. On success, the order advances to `En Proceso` and the driver is set to `Ocupado`.
+
+**Required permission:** `asignaciones:write`
+
+### Request body
+
+<ParamField body="orden_id" type="integer" required>
+  ID of the order to assign. Must be in `Pendiente` state.
+</ParamField>
+
+<ParamField body="conductor_id" type="integer" required>
+  ID of the driver to assign. Must be active and `Disponible`.
+</ParamField>
+
+<ParamField body="vehiculo_placa" type="string" required>
+  Licence plate of the vehicle to use. Must be active and `Operativo`.
+</ParamField>
+
+### Response `201`
+
+The newly created assignment object.
+
+```bash
+curl -X POST https://api.rappi2.com/api/asignaciones \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "orden_id": 101,
+    "conductor_id": 5,
+    "vehiculo_placa": "ABC-123"
+  }'
+```
+
+---
+
+## Get an assignment
+
+<ParamField path="GET /api/asignaciones/{asignacion_id}" type="string" />
+
+Returns a single assignment by ID. Returns `404` if not found.
+
+**Required permission:** `asignaciones:read`
+
+### Path parameters
+
+<ParamField path="asignacion_id" type="integer" required>
+  Assignment ID.
+</ParamField>
+
+### Response `200`
+
+Assignment object.
+
+```bash
+curl https://api.rappi2.com/api/asignaciones/88 \
+  -H "Authorization: Bearer <token>"
+```
+
+---
+
+## Update an assignment
+
+<ParamField path="PATCH /api/asignaciones/{asignacion_id}" type="string" />
+
+General-purpose partial update. For lifecycle transitions use the dedicated `/iniciar` and `/finalizar` endpoints instead, as they enforce state-machine rules and update related resources.
+
+**Required permission:** `asignaciones:write`
+
+### Path parameters
+
+<ParamField path="asignacion_id" type="integer" required>
+  Assignment ID.
+</ParamField>
+
+### Request body
+
+All fields are optional.
+
+<ParamField body="estado" type="string">
+  New state: `Asignada`, `EnCurso`, `Finalizada`, or `Cancelada`.
+</ParamField>
+
+<ParamField body="fecha_inicio" type="string (datetime)">
+  Manual override of the start timestamp.
+</ParamField>
+
+<ParamField body="fecha_fin" type="string (datetime)">
+  Manual override of the end timestamp.
+</ParamField>
+
+### Response `200`
+
+Updated assignment object.
+
+```bash
+curl -X PATCH https://api.rappi2.com/api/asignaciones/88 \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"estado": "Cancelada"}'
+```
+
+---
+
+## Start a delivery
+
+<ParamField path="PATCH /api/asignaciones/{asignacion_id}/iniciar" type="string" />
+
+Transitions the assignment from `Asignada` to `EnCurso`. Simultaneously advances the linked order to `En Tránsito` and records `fecha_inicio`. Returns `400` if the assignment is not currently `Asignada`.
+
+**Required permission:** `asignaciones:write`
+
+### Path parameters
+
+<ParamField path="asignacion_id" type="integer" required>
+  Assignment ID. Must be in `Asignada` state.
+</ParamField>
+
+### Request body
+
+No body required.
+
+### Response `200`
+
+Updated assignment object with `estado = EnCurso` and `fecha_inicio` set.
+
+```bash
+curl -X PATCH https://api.rappi2.com/api/asignaciones/88/iniciar \
+  -H "Authorization: Bearer <token>"
+```
+
+---
+
+## Finish a delivery
+
+<ParamField path="PATCH /api/asignaciones/{asignacion_id}/finalizar" type="string" />
+
+Transitions the assignment from `EnCurso` to `Finalizada`. Simultaneously marks the order as `Entregado`, sets the driver back to `Disponible`, and records `fecha_fin`. Returns `400` if the assignment is not currently `EnCurso`.
+
+**Required permission:** `asignaciones:write`
+
+### Path parameters
+
+<ParamField path="asignacion_id" type="integer" required>
+  Assignment ID. Must be in `EnCurso` state.
+</ParamField>
+
+### Request body
+
+No body required.
+
+### Response `200`
+
+Updated assignment object with `estado = Finalizada` and `fecha_fin` set.
+
+```bash
+curl -X PATCH https://api.rappi2.com/api/asignaciones/88/finalizar \
+  -H "Authorization: Bearer <token>"
+```
+
+---
+
+## Cancel / delete an assignment
+
+<ParamField path="DELETE /api/asignaciones/{asignacion_id}" type="string" />
+
+Permanently removes the assignment record along with any associated tracking and geofence data stored in MongoDB. Returns `400` if the assignment is currently `EnCurso` — call `/finalizar` first.
+
+**Required permission:** `asignaciones:delete`
+
+### Path parameters
+
+<ParamField path="asignacion_id" type="integer" required>
+  Assignment ID. Must not be in `EnCurso` state.
+</ParamField>
+
+### Response `204`
+
+No body.
+
+```bash
+curl -X DELETE https://api.rappi2.com/api/asignaciones/88 \
+  -H "Authorization: Bearer <token>"
+```

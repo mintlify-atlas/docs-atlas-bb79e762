@@ -1,0 +1,282 @@
+---
+title: "Drivers API — manage delivery drivers"
+description: "CRUD for driver profiles, availability state management (Disponible, Ocupado, Inactivo), and vehicle association via a dedicated sub-endpoint."
+---
+
+The Drivers API manages the courier workforce. Each driver (`Conductor`) is linked to a user account and optionally to a vehicle. Availability is tracked through the `disponibilidad` field, which is automatically updated when an assignment is created or completed. Deleting a driver soft-deletes the record and sets availability to `Inactivo`.
+
+---
+
+## Availability states
+
+| State | Description |
+|---|---|
+| `Disponible` | Driver is available for new assignments. |
+| `Ocupado` | Driver currently has an active assignment. |
+| `Inactivo` | Driver account is deactivated and cannot receive assignments. |
+
+<Info>
+The Assignments API automatically transitions a driver from `Disponible` → `Ocupado` on assignment creation and back to `Disponible` when the assignment is finalised.
+</Info>
+
+---
+
+## List drivers
+
+<ParamField path="GET /api/conductores" type="string" />
+
+Returns a paginated list of drivers. Each response item includes the associated vehicle object if one is linked.
+
+**Required permission:** `conductores:read`
+
+### Query parameters
+
+<ParamField query="skip" type="integer" default="0">
+  Number of records to skip for pagination.
+</ParamField>
+
+<ParamField query="limit" type="integer" default="50">
+  Maximum number of records to return. Hard cap: 200.
+</ParamField>
+
+<ParamField query="activo" type="boolean" default="true">
+  Filter by active status.
+</ParamField>
+
+<ParamField query="disponibilidad" type="string">
+  Filter by availability state: `Disponible`, `Ocupado`, or `Inactivo`.
+</ParamField>
+
+### Response `200`
+
+Array of driver objects.
+
+<ResponseField name="id" type="integer" required>
+  Unique driver identifier.
+</ResponseField>
+
+<ResponseField name="usuario_id" type="integer" required>
+  Linked user account ID.
+</ResponseField>
+
+<ResponseField name="nombre" type="string" required>
+  Driver's full name.
+</ResponseField>
+
+<ResponseField name="licencia" type="string" required>
+  Driver's licence number. Must be unique.
+</ResponseField>
+
+<ResponseField name="disponibilidad" type="string" required>
+  Current availability: `Disponible`, `Ocupado`, or `Inactivo`.
+</ResponseField>
+
+<ResponseField name="vehiculo_placa" type="string">
+  Plate of the currently assigned vehicle, or `null`.
+</ResponseField>
+
+<ResponseField name="activo" type="boolean" required>
+  Whether the driver account is active.
+</ResponseField>
+
+<ResponseField name="vehiculo" type="object">
+  Full vehicle object if a vehicle is assigned, otherwise `null`.
+  <Expandable title="vehicle fields">
+    <ResponseField name="placa" type="string" required>Licence plate (primary key).</ResponseField>
+    <ResponseField name="tipo" type="string" required>Vehicle type (e.g. `moto`, `camioneta`).</ResponseField>
+    <ResponseField name="capacidad_kg" type="number" required>Maximum payload in kilograms.</ResponseField>
+    <ResponseField name="estado" type="string" required>Operational state: `Operativo`, `Mantenimiento`, or `Inactivo`.</ResponseField>
+    <ResponseField name="fecha_mantenimiento" type="string (datetime)">Last or next maintenance timestamp.</ResponseField>
+    <ResponseField name="activo" type="boolean" required>Whether the vehicle is active.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+```bash
+curl "https://api.rappi2.com/api/conductores?disponibilidad=Disponible" \
+  -H "Authorization: Bearer <token>"
+```
+
+---
+
+## Create a driver
+
+<ParamField path="POST /api/conductores" type="string" />
+
+Creates a new driver profile linked to an existing user account. Optionally assigns a vehicle at creation time. Returns `400` if `usuario_id` does not exist or if `usuario_id` / `licencia` is already in use.
+
+**Required permission:** `conductores:write`
+
+### Request body
+
+<ParamField body="nombre" type="string" required>
+  Driver's full name.
+</ParamField>
+
+<ParamField body="licencia" type="string" required>
+  Unique driver's licence number.
+</ParamField>
+
+<ParamField body="usuario_id" type="integer" required>
+  ID of an existing user account to link.
+</ParamField>
+
+<ParamField body="disponibilidad" type="string" default="Disponible">
+  Initial availability state.
+</ParamField>
+
+<ParamField body="vehiculo_placa" type="string">
+  Plate of the vehicle to assign at creation. Must be an existing vehicle.
+</ParamField>
+
+### Response `201`
+
+The newly created driver object (same shape as list items).
+
+```bash
+curl -X POST https://api.rappi2.com/api/conductores \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "nombre": "Carlos Ríos",
+    "licencia": "L-00123456",
+    "usuario_id": 7,
+    "vehiculo_placa": "ABC-123"
+  }'
+```
+
+---
+
+## Get a driver
+
+<ParamField path="GET /api/conductores/{conductor_id}" type="string" />
+
+Returns a single driver including the linked vehicle. Returns `404` if not found.
+
+**Required permission:** `conductores:read`
+
+### Path parameters
+
+<ParamField path="conductor_id" type="integer" required>
+  Driver ID.
+</ParamField>
+
+### Response `200`
+
+Driver object.
+
+```bash
+curl https://api.rappi2.com/api/conductores/5 \
+  -H "Authorization: Bearer <token>"
+```
+
+---
+
+## Update a driver
+
+<ParamField path="PATCH /api/conductores/{conductor_id}" type="string" />
+
+Partially updates driver fields. To change only the vehicle assignment, prefer the dedicated `/vehiculo` sub-endpoint.
+
+**Required permission:** `conductores:write`
+
+### Path parameters
+
+<ParamField path="conductor_id" type="integer" required>
+  Driver ID.
+</ParamField>
+
+### Request body
+
+All fields are optional.
+
+<ParamField body="nombre" type="string">
+  New full name.
+</ParamField>
+
+<ParamField body="disponibilidad" type="string">
+  New availability state: `Disponible`, `Ocupado`, or `Inactivo`.
+</ParamField>
+
+<ParamField body="vehiculo_placa" type="string">
+  New vehicle plate. Must reference an existing vehicle.
+</ParamField>
+
+<ParamField body="activo" type="boolean">
+  Toggle the active flag.
+</ParamField>
+
+### Response `200`
+
+Updated driver object.
+
+```bash
+curl -X PATCH https://api.rappi2.com/api/conductores/5 \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"disponibilidad": "Inactivo"}'
+```
+
+---
+
+## Assign a vehicle to a driver
+
+<ParamField path="PATCH /api/conductores/{conductor_id}/vehiculo" type="string" />
+
+Sets or clears the vehicle linked to a driver. When assigning, the vehicle must be active and in `Operativo` state. Pass `vehiculo_placa: null` to unlink the current vehicle.
+
+**Required permission:** `conductores:write`
+
+### Path parameters
+
+<ParamField path="conductor_id" type="integer" required>
+  Driver ID.
+</ParamField>
+
+### Request body
+
+<ParamField body="vehiculo_placa" type="string">
+  Plate of the vehicle to assign. Pass `null` to remove the vehicle association.
+</ParamField>
+
+### Response `200`
+
+Updated driver object, with the new vehicle embedded.
+
+```bash
+# Assign vehicle
+curl -X PATCH https://api.rappi2.com/api/conductores/5/vehiculo \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"vehiculo_placa": "ABC-123"}'
+
+# Remove vehicle
+curl -X PATCH https://api.rappi2.com/api/conductores/5/vehiculo \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"vehiculo_placa": null}'
+```
+
+---
+
+## Deactivate a driver
+
+<ParamField path="DELETE /api/conductores/{conductor_id}" type="string" />
+
+Soft-deletes the driver by setting `activo = false` and `disponibilidad = Inactivo`. The record is preserved.
+
+**Required permission:** `conductores:delete`
+
+### Path parameters
+
+<ParamField path="conductor_id" type="integer" required>
+  Driver ID.
+</ParamField>
+
+### Response `204`
+
+No body.
+
+```bash
+curl -X DELETE https://api.rappi2.com/api/conductores/5 \
+  -H "Authorization: Bearer <token>"
+```

@@ -1,0 +1,329 @@
+---
+title: "Users API — manage user accounts"
+description: "CRUD for platform user accounts. List with activo filter, create with explicit rol_id, update email/role/password, and soft-delete by setting activo=false."
+---
+
+The Users API provides administrative control over user accounts. Every endpoint requires a valid `Bearer` token. Read operations require the `usuarios:read` permission; write operations require `usuarios:write`; and deletion requires `usuarios:delete`.
+
+---
+
+## GET /api/usuarios/
+
+List all users with optional filtering and pagination.
+
+**Authentication:** `Bearer` token required.  
+**Permission required:** `usuarios:read`
+
+### Query parameters
+
+<ParamField query="skip" type="number" default="0">
+  Number of records to skip. Use with `limit` for pagination.
+</ParamField>
+
+<ParamField query="limit" type="number" default="50" placeholder="1-200">
+  Maximum number of records to return. Cannot exceed 200.
+</ParamField>
+
+<ParamField query="activo" type="boolean">
+  Filter by account status. Omit to return all users regardless of status.
+</ParamField>
+
+### Response — 200 OK
+
+Returns an array of `UsuarioResponse` objects.
+
+<ResponseField name="id" type="number" required>
+  Auto-incremented user ID.
+</ResponseField>
+
+<ResponseField name="username" type="string" required>
+  Unique username.
+</ResponseField>
+
+<ResponseField name="email" type="string" required>
+  Email address.
+</ResponseField>
+
+<ResponseField name="rol_id" type="number" required>
+  ID of the assigned role.
+</ResponseField>
+
+<ResponseField name="cliente_id" type="number">
+  ID of the linked `Cliente` record, or `null`.
+</ResponseField>
+
+<ResponseField name="activo" type="boolean" required>
+  Whether the account is active.
+</ResponseField>
+
+<ResponseField name="fecha_registro" type="string" required>
+  ISO 8601 timestamp of account creation.
+</ResponseField>
+
+<ResponseField name="rol" type="object">
+  Embedded role with its permissions.
+  <Expandable title="properties">
+    <ResponseField name="id" type="number" required>Role ID.</ResponseField>
+    <ResponseField name="nombre" type="string" required>Role name.</ResponseField>
+    <ResponseField name="permisos" type="array">
+      Permissions assigned to the role.
+      <Expandable title="properties">
+        <ResponseField name="id" type="number" required>Permission ID.</ResponseField>
+        <ResponseField name="rol_id" type="number" required>Parent role ID.</ResponseField>
+        <ResponseField name="recurso" type="string" required>Resource name.</ResponseField>
+        <ResponseField name="accion" type="string" required>Granted action.</ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<RequestExample>
+```bash cURL
+curl --request GET \
+  --url 'https://api.example.com/api/usuarios/?skip=0&limit=20&activo=true' \
+  --header 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+[
+  {
+    "id": 1,
+    "username": "admin",
+    "email": "admin@example.com",
+    "rol_id": 2,
+    "cliente_id": null,
+    "activo": true,
+    "fecha_registro": "2026-01-01T00:00:00Z",
+    "rol": {
+      "id": 2,
+      "nombre": "Admin",
+      "permisos": [
+        { "id": 1, "rol_id": 2, "recurso": "usuarios", "accion": "*" }
+      ]
+    }
+  }
+]
+```
+</ResponseExample>
+
+---
+
+## POST /api/usuarios/
+
+Create a new user account directly (admin operation). Unlike `/api/auth/register`, this endpoint does **not** auto-create a `Cliente` record and requires explicit `rol_id`.
+
+**Authentication:** `Bearer` token required.  
+**Permission required:** `usuarios:write`
+
+### Request body
+
+<ParamField body="username" type="string" required>
+  Unique username. Maximum 50 characters.
+</ParamField>
+
+<ParamField body="email" type="string" required>
+  Unique email address.
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  Plain-text password. Hashed with bcrypt before storage.
+</ParamField>
+
+<ParamField body="rol_id" type="number" required>
+  ID of the role to assign. Must reference an existing role.
+</ParamField>
+
+<ParamField body="cliente_id" type="number">
+  ID of an existing `Cliente` record to link to this user. Must be unique across users.
+</ParamField>
+
+### Response — 201 Created
+
+Returns the created `UsuarioResponse`. See [GET /api/usuarios/](#response--200-ok) for the full field list.
+
+<RequestExample>
+```bash cURL
+curl --request POST \
+  --url https://api.example.com/api/usuarios/ \
+  --header 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "username": "conductor01",
+    "email": "conductor01@example.com",
+    "password": "p@ssw0rd",
+    "rol_id": 3
+  }'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 201
+{
+  "id": 55,
+  "username": "conductor01",
+  "email": "conductor01@example.com",
+  "rol_id": 3,
+  "cliente_id": null,
+  "activo": true,
+  "fecha_registro": "2026-05-22T12:00:00Z",
+  "rol": {
+    "id": 3,
+    "nombre": "Conductor",
+    "permisos": []
+  }
+}
+```
+</ResponseExample>
+
+---
+
+## GET /api/usuarios/{usuario_id}
+
+Retrieve a single user by ID.
+
+**Authentication:** `Bearer` token required.  
+**Permission required:** `usuarios:read`
+
+### Path parameters
+
+<ParamField path="usuario_id" type="number" required>
+  ID of the user to retrieve.
+</ParamField>
+
+### Response — 200 OK
+
+Returns a `UsuarioResponse` object. See [GET /api/usuarios/](#response--200-ok) for the full field list.
+
+<RequestExample>
+```bash cURL
+curl --request GET \
+  --url https://api.example.com/api/usuarios/55 \
+  --header 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "id": 55,
+  "username": "conductor01",
+  "email": "conductor01@example.com",
+  "rol_id": 3,
+  "cliente_id": null,
+  "activo": true,
+  "fecha_registro": "2026-05-22T12:00:00Z",
+  "rol": {
+    "id": 3,
+    "nombre": "Conductor",
+    "permisos": []
+  }
+}
+```
+
+```json 404
+{ "detail": "Usuario no encontrado" }
+```
+</ResponseExample>
+
+---
+
+## PATCH /api/usuarios/{usuario_id}
+
+Partially update a user account. Only fields included in the request body are modified. Changing `rol_id` invalidates the role permission cache for both old and new roles.
+
+**Authentication:** `Bearer` token required.  
+**Permission required:** `usuarios:write`
+
+### Path parameters
+
+<ParamField path="usuario_id" type="number" required>
+  ID of the user to update.
+</ParamField>
+
+### Request body
+
+All fields are optional. Include only the fields you want to change.
+
+<ParamField body="email" type="string">
+  New email address. Must be unique.
+</ParamField>
+
+<ParamField body="rol_id" type="number">
+  ID of the new role to assign.
+</ParamField>
+
+<ParamField body="activo" type="boolean">
+  Set to `false` to deactivate without deleting, or `true` to re-activate.
+</ParamField>
+
+<ParamField body="password" type="string">
+  New plain-text password. Hashed before storage.
+</ParamField>
+
+### Response — 200 OK
+
+Returns the updated `UsuarioResponse`. See [GET /api/usuarios/](#response--200-ok) for the full field list.
+
+<RequestExample>
+```bash cURL
+curl --request PATCH \
+  --url https://api.example.com/api/usuarios/55 \
+  --header 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...' \
+  --header 'Content-Type: application/json' \
+  --data '{"activo": false}'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "id": 55,
+  "username": "conductor01",
+  "email": "conductor01@example.com",
+  "rol_id": 3,
+  "cliente_id": null,
+  "activo": false,
+  "fecha_registro": "2026-05-22T12:00:00Z",
+  "rol": {
+    "id": 3,
+    "nombre": "Conductor",
+    "permisos": []
+  }
+}
+```
+</ResponseExample>
+
+---
+
+## DELETE /api/usuarios/{usuario_id}
+
+Soft-delete a user by setting `activo = false`. The record is retained in the database; the user cannot log in while inactive.
+
+**Authentication:** `Bearer` token required.  
+**Permission required:** `usuarios:delete`
+
+### Path parameters
+
+<ParamField path="usuario_id" type="number" required>
+  ID of the user to deactivate.
+</ParamField>
+
+### Response — 204 No Content
+
+No response body is returned on success.
+
+<RequestExample>
+```bash cURL
+curl --request DELETE \
+  --url https://api.example.com/api/usuarios/55 \
+  --header 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 404
+{ "detail": "Usuario no encontrado" }
+```
+</ResponseExample>

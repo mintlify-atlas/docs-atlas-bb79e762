@@ -1,0 +1,181 @@
+---
+title: "Plan delivery routes with OpenRouteService"
+description: "Use the Rappi2 route planning endpoint to calculate optimal driving routes via OpenRouteService and optionally auto-generate a route-buffer geofence."
+---
+
+Rappi2 integrates with [OpenRouteService](https://openrouteservice.org/) (ORS) to calculate real driving routes between an order's origin and destination. The `/api/rutas/planificar` endpoint calls the ORS Directions API, persists the route in Postgres, and — optionally — creates a buffer geofence in MongoDB that you can use later for driver deviation alerts.
+
+---
+
+## Prerequisites
+
+Set the `ORS_API_KEY` environment variable to a valid OpenRouteService API key before starting the service. All requests to `/api/rutas/planificar` will fail with `502` if the key is missing or invalid.
+
+```bash
+export ORS_API_KEY="your-ors-api-key"
+```
+
+The ORS Directions endpoint used is:
+
+```
+POST https://api.openrouteservice.org/v2/directions/driving-car
+```
+
+---
+
+## Auto-plan a route
+
+Send the four corner coordinates and Rappi2 calls ORS, stores `distancia_km` and `tiempo_estimado`, and returns the saved route. Pass `generar_geocerca: true` (the default) to also create a buffer polygon in MongoDB.
+
+**Required permission:** `rutas:write`
+
+```bash
+curl -X POST https://api.rappi2.example/api/rutas/planificar \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "orden_id": 1001,
+    "origen_lon": -77.0282,
+    "origen_lat": -12.1191,
+    "destino_lon": -77.0478,
+    "destino_lat": -12.0432,
+    "generar_geocerca": true,
+    "tolerancia_metros": 75
+  }'
+```
+
+**Response `201 Created`:**
+
+```json
+{
+  "id": 12,
+  "orden_id": 1001,
+  "distancia_km": "11.340",
+  "tiempo_estimado": "PT23M15S",
+  "paradas": []
+}
+```
+
+| Field | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| `orden_id` | integer | Yes | — | Must reference an existing order |
+| `origen_lon` | float | Yes | — | Pickup longitude, `[-180, 180]` |
+| `origen_lat` | float | Yes | — | Pickup latitude, `[-90, 90]` |
+| `destino_lon` | float | Yes | — | Delivery longitude, `[-180, 180]` |
+| `destino_lat` | float | Yes | — | Delivery latitude, `[-90, 90]` |
+| `generar_geocerca` | boolean | No | `true` | Auto-create a route-buffer geofence |
+| `tolerancia_metros` | integer | No | `50` | Buffer tolerance for the geofence, `[1, 5000]` |
+
+`distancia_km` and `tiempo_estimado` are populated directly from the ORS response (`summary.distance` converted to km, `summary.duration` stored as an ISO 8601 duration).
+
+---
+
+## Manual route creation
+
+If you already have route data or want to skip ORS, create a route directly by supplying the values and an optional list of waypoint stops.
+
+**Required permission:** `rutas:write`
+
+```bash
+curl -X POST https://api.rappi2.example/api/rutas \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "orden_id": 1001,
+    "distancia_km": "11.340",
+    "tiempo_estimado": "PT23M00S",
+    "paradas": [
+      {
+        "direccion": "Av. Larco 1150, Miraflores",
+        "distrito": "Miraflores",
+        "secuencia": 1,
+        "estado": "Pendiente"
+      },
+      {
+        "direccion": "Jr. de la Unión 398, Cercado de Lima",
+        "distrito": "Cercado de Lima",
+        "secuencia": 2,
+        "estado": "Pendiente"
+      }
+    ]
+  }'
+```
+
+| Parada field | Type | Required | Notes |
+|---|---|---|---|
+| `direccion` | string | Yes | Human-readable address |
+| `distrito` | string | No | Borough or district |
+| `secuencia` | integer | Yes | Ordering of the stop along the route |
+| `estado` | string | No | `Pendiente` \| `Visitada` \| `Omitida`. Defaults to `Pendiente` |
+
+---
+
+## Geofence auto-generation
+
+When `generar_geocerca` is `true`, Rappi2 passes the GeoJSON `LineString` geometry returned by ORS to `geocerca_service.crear_desde_geometry`, which stores a Polygon of type `ruta_buffer` in the `geocercas` MongoDB collection.
+
+<Note>
+  The geofence geometry is the raw ORS route shape. The `tolerancia_metros` value is stored on the document (as `tolerance_m`) for reference, but the polygon boundary itself is not expanded by that tolerance — it matches the ORS route line exactly. Use `tolerancia_metros` as metadata for your own deviation-detection logic.
+  
+  The default `tolerancia_metros` is `50`. You can raise it up to `5000` for long rural routes where minor deviations are acceptable.
+</Note>
+
+You can retrieve geofences for a route using:
+
+```bash
+curl "https://api.rappi2.example/api/geocercas?ruta_id=12&activa=true" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+## Managing stops
+
+Stops (`paradas`) can be added, updated, and removed on any saved route. Stops are always returned ordered by `secuencia`.
+
+**List stops:**
+
+```bash
+curl "https://api.rappi2.example/api/rutas/12/paradas" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Add a stop:**
+
+```bash
+curl -X POST https://api.rappi2.example/api/rutas/12/paradas \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "direccion": "Calle Schell 130, Miraflores",
+    "distrito": "Miraflores",
+    "secuencia": 2,
+    "estado": "Pendiente"
+  }'
+```
+
+**Mark a stop as visited:**
+
+```bash
+curl -X PATCH https://api.rappi2.example/api/rutas/12/paradas/8 \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "estado": "Visitada",
+    "fecha_paso": "2025-06-01T10:35:00Z"
+  }'
+```
+
+**Remove a stop:**
+
+```bash
+curl -X DELETE https://api.rappi2.example/api/rutas/12/paradas/8 \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+| Method | Path | Permission | Notes |
+|---|---|---|---|
+| `GET` | `/api/rutas/{id}/paradas` | `rutas:read` | Returns stops ordered by `secuencia` |
+| `POST` | `/api/rutas/{id}/paradas` | `rutas:write` | Adds a stop |
+| `PATCH` | `/api/rutas/{id}/paradas/{parada_id}` | `rutas:write` | Updates `estado`, `fecha_paso`, `direccion`, or `distrito` |
+| `DELETE` | `/api/rutas/{id}/paradas/{parada_id}` | `rutas:write` | Removes the stop permanently |

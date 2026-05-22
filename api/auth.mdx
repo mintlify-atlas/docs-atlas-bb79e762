@@ -1,0 +1,316 @@
+---
+title: "Auth API — login, register, refresh, logout"
+description: "Authentication endpoints for obtaining and managing JWT access and refresh tokens. Covers registration, login, token rotation, logout, and current-user lookup."
+---
+
+The Auth API handles all identity operations: creating new accounts, exchanging credentials for a JWT token pair, rotating tokens, invalidating sessions, and retrieving the currently authenticated user's profile. All protected endpoints expect a `Bearer` token in the `Authorization` header.
+
+---
+
+## POST /api/auth/register
+
+Create a new user account. If no `rol_id` is provided the account is assigned the default `Cliente` role and a linked `Cliente` record is created automatically.
+
+**Authentication:** none required.
+
+### Request body
+
+<ParamField body="username" type="string" required>
+  Unique username. Maximum 50 characters.
+</ParamField>
+
+<ParamField body="email" type="string" required>
+  Unique email address.
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  Plain-text password. Hashed with bcrypt before storage.
+</ParamField>
+
+<ParamField body="nombre" type="string">
+  Display name used for the auto-created `Cliente` record. Defaults to `username` when omitted.
+</ParamField>
+
+<ParamField body="telefono" type="string">
+  Phone number stored on the `Cliente` record. Only used when the assigned role is `Cliente`.
+</ParamField>
+
+<ParamField body="rol_id" type="number">
+  ID of the role to assign. Defaults to the `Cliente` role when omitted.
+</ParamField>
+
+<ParamField body="cc_id" type="string">
+  National ID / CC stored on the `Cliente` record. Only used when the assigned role is `Cliente`.
+</ParamField>
+
+### Response — 201 Created
+
+Returns a `UsuarioResponse` object.
+
+<ResponseField name="id" type="number" required>
+  Auto-incremented user ID.
+</ResponseField>
+
+<ResponseField name="username" type="string" required>
+  Username chosen at registration.
+</ResponseField>
+
+<ResponseField name="email" type="string" required>
+  Email address.
+</ResponseField>
+
+<ResponseField name="rol_id" type="number" required>
+  ID of the assigned role.
+</ResponseField>
+
+<ResponseField name="cliente_id" type="number">
+  ID of the linked `Cliente` record, or `null` for non-client roles.
+</ResponseField>
+
+<ResponseField name="activo" type="boolean" required>
+  Whether the account is active. Always `true` on creation.
+</ResponseField>
+
+<ResponseField name="fecha_registro" type="string" required>
+  ISO 8601 timestamp of account creation.
+</ResponseField>
+
+<ResponseField name="rol" type="object">
+  Embedded role object including its permissions.
+  <Expandable title="properties">
+    <ResponseField name="id" type="number" required>Role ID.</ResponseField>
+    <ResponseField name="nombre" type="string" required>Role name.</ResponseField>
+    <ResponseField name="permisos" type="array">
+      List of permission objects assigned to the role.
+      <Expandable title="properties">
+        <ResponseField name="id" type="number" required>Permission ID.</ResponseField>
+        <ResponseField name="rol_id" type="number" required>Parent role ID.</ResponseField>
+        <ResponseField name="recurso" type="string" required>Resource the permission applies to.</ResponseField>
+        <ResponseField name="accion" type="string" required>Action granted (`read`, `write`, `delete`, or `*`).</ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<RequestExample>
+```bash cURL
+curl --request POST \
+  --url https://api.example.com/api/auth/register \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "username": "jdoe",
+    "email": "jdoe@example.com",
+    "password": "s3cr3t",
+    "nombre": "Jane Doe",
+    "telefono": "+573001234567"
+  }'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 201
+{
+  "id": 42,
+  "username": "jdoe",
+  "email": "jdoe@example.com",
+  "rol_id": 1,
+  "cliente_id": 17,
+  "activo": true,
+  "fecha_registro": "2026-05-22T10:00:00Z",
+  "rol": {
+    "id": 1,
+    "nombre": "Cliente",
+    "permisos": []
+  }
+}
+```
+</ResponseExample>
+
+---
+
+## POST /api/auth/login
+
+Exchange credentials for a JWT token pair.
+
+<Note>
+  This endpoint uses `application/x-www-form-urlencoded` encoding (OAuth2 password flow), **not** JSON. Send `username` and `password` as form fields, not a JSON body.
+</Note>
+
+**Authentication:** none required.
+
+### Request body (form-encoded)
+
+<ParamField body="username" type="string" required>
+  The account username.
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  The account password.
+</ParamField>
+
+### Response — 200 OK
+
+<ResponseField name="access_token" type="string" required>
+  Short-lived JWT for authenticating API requests. Send as `Authorization: Bearer <token>`.
+</ResponseField>
+
+<ResponseField name="refresh_token" type="string" required>
+  Long-lived opaque token for obtaining a new token pair via `/api/auth/refresh`.
+</ResponseField>
+
+<ResponseField name="token_type" type="string" required>
+  Always `"bearer"`.
+</ResponseField>
+
+<ResponseField name="expires_in" type="number" required>
+  Lifetime of the access token in seconds.
+</ResponseField>
+
+<RequestExample>
+```bash cURL
+curl --request POST \
+  --url https://api.example.com/api/auth/login \
+  --header 'Content-Type: application/x-www-form-urlencoded' \
+  --data-urlencode 'username=jdoe' \
+  --data-urlencode 'password=s3cr3t'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refresh_token": "dGhpcyBpcyBhIHJlZnJlc2ggdG9rZW4...",
+  "token_type": "bearer",
+  "expires_in": 900
+}
+```
+</ResponseExample>
+
+---
+
+## POST /api/auth/refresh
+
+Exchange a valid refresh token for a new token pair. The submitted refresh token is immediately revoked and replaced with a new one (token rotation).
+
+**Authentication:** none required (the refresh token itself is the credential).
+
+### Request body
+
+<ParamField body="refresh_token" type="string" required>
+  A non-revoked, non-expired refresh token previously issued by `/api/auth/login` or this endpoint.
+</ParamField>
+
+### Response — 200 OK
+
+Returns a new `TokenPair` identical in shape to the login response.
+
+<ResponseField name="access_token" type="string" required>
+  New short-lived JWT.
+</ResponseField>
+
+<ResponseField name="refresh_token" type="string" required>
+  New long-lived refresh token. The previously submitted token is revoked.
+</ResponseField>
+
+<ResponseField name="token_type" type="string" required>
+  Always `"bearer"`.
+</ResponseField>
+
+<ResponseField name="expires_in" type="number" required>
+  Lifetime of the new access token in seconds.
+</ResponseField>
+
+<RequestExample>
+```bash cURL
+curl --request POST \
+  --url https://api.example.com/api/auth/refresh \
+  --header 'Content-Type: application/json' \
+  --data '{"refresh_token": "dGhpcyBpcyBhIHJlZnJlc2ggdG9rZW4..."}'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refresh_token": "bmV3UmVmcmVzaFRva2Vu...",
+  "token_type": "bearer",
+  "expires_in": 900
+}
+```
+</ResponseExample>
+
+---
+
+## POST /api/auth/logout
+
+Revoke a refresh token to invalidate the session. The corresponding access token continues to work until it naturally expires; revoke it client-side by discarding it.
+
+**Authentication:** none required (submitting the token to revoke is sufficient).
+
+### Request body
+
+<ParamField body="refresh_token" type="string" required>
+  The refresh token to revoke. If it is already revoked or not found the request still returns success.
+</ParamField>
+
+### Response — 200 OK
+
+```json
+{ "message": "Logout exitoso" }
+```
+
+<RequestExample>
+```bash cURL
+curl --request POST \
+  --url https://api.example.com/api/auth/logout \
+  --header 'Content-Type: application/json' \
+  --data '{"refresh_token": "dGhpcyBpcyBhIHJlZnJlc2ggdG9rZW4..."}'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{ "message": "Logout exitoso" }
+```
+</ResponseExample>
+
+---
+
+## GET /api/auth/me
+
+Return the full profile of the currently authenticated user, including the embedded role and its permissions.
+
+**Authentication:** `Bearer` token required.
+
+### Response — 200 OK
+
+Returns a `UsuarioResponse` object. See the [register response fields](#response--201-created) above for the full field list.
+
+<RequestExample>
+```bash cURL
+curl --request GET \
+  --url https://api.example.com/api/auth/me \
+  --header 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "id": 42,
+  "username": "jdoe",
+  "email": "jdoe@example.com",
+  "rol_id": 1,
+  "cliente_id": 17,
+  "activo": true,
+  "fecha_registro": "2026-05-22T10:00:00Z",
+  "rol": {
+    "id": 1,
+    "nombre": "Cliente",
+    "permisos": []
+  }
+}
+```
+</ResponseExample>

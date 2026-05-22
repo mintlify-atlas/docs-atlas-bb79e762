@@ -1,0 +1,488 @@
+---
+title: "Orders API — create and manage delivery orders"
+description: "CRUD for delivery orders with Pendiente→Entregado state transitions, client and estado filters, plus payments and invoices sub-resources under each order."
+---
+
+The Orders API manages the lifecycle of delivery orders from creation through final delivery or cancellation. Orders progress through a strict state machine; some transitions are triggered automatically by the Assignments API. Payments and invoices are attached to an order via sub-resource endpoints documented at the bottom of this page.
+
+---
+
+## Order state machine
+
+An order always starts in `Pendiente`. From there it advances as drivers are assigned and start their routes, and can be cancelled at any point except when already cancelled.
+
+```
+Pendiente ──(assignment created)──► En Proceso
+En Proceso ──(assignment started)──► En Tránsito
+En Tránsito ──(assignment finished)──► Entregado
+
+any state ──(DELETE /ordenes/{id})──► Cancelado
+```
+
+| State | Description |
+|---|---|
+| `Pendiente` | Order created, awaiting driver assignment. |
+| `En Proceso` | Driver assigned; not yet en route. |
+| `En Tránsito` | Driver has started the delivery. |
+| `Entregado` | Delivery confirmed complete. |
+| `Cancelado` | Order cancelled; terminal state. |
+
+---
+
+## List orders
+
+<ParamField path="GET /api/ordenes" type="string" />
+
+Returns a paginated list of orders, newest first. Filter by client or status using query parameters.
+
+**Required permission:** `ordenes:read`
+
+### Query parameters
+
+<ParamField query="skip" type="integer" default="0">
+  Number of records to skip for pagination.
+</ParamField>
+
+<ParamField query="limit" type="integer" default="50">
+  Maximum number of records to return. Hard cap: 200.
+</ParamField>
+
+<ParamField query="cliente_id" type="integer">
+  Return only orders belonging to this client.
+</ParamField>
+
+<ParamField query="estado" type="string">
+  Filter by order state. One of `Pendiente`, `En Proceso`, `En Tránsito`, `Entregado`, `Cancelado`.
+</ParamField>
+
+### Response `200`
+
+Array of order objects.
+
+<ResponseField name="id" type="integer" required>
+  Unique order identifier.
+</ResponseField>
+
+<ResponseField name="cliente_id" type="integer" required>
+  ID of the client who placed the order.
+</ResponseField>
+
+<ResponseField name="estado" type="string" required>
+  Current order state.
+</ResponseField>
+
+<ResponseField name="direccion_origen" type="string" required>
+  Pick-up street address.
+</ResponseField>
+
+<ResponseField name="distrito_origen" type="string">
+  Pick-up district.
+</ResponseField>
+
+<ResponseField name="direccion_destino" type="string" required>
+  Delivery street address.
+</ResponseField>
+
+<ResponseField name="distrito_destino" type="string">
+  Delivery district.
+</ResponseField>
+
+<ResponseField name="total" type="number">
+  Order total amount (decimal).
+</ResponseField>
+
+<ResponseField name="fecha_creacion" type="string (datetime)">
+  ISO 8601 creation timestamp.
+</ResponseField>
+
+```bash
+curl "https://api.rappi2.com/api/ordenes?cliente_id=42&estado=Pendiente" \
+  -H "Authorization: Bearer <token>"
+```
+
+---
+
+## Create an order
+
+<ParamField path="POST /api/ordenes" type="string" />
+
+Creates a new order with initial state `Pendiente`. The referenced client must be active.
+
+**Required permission:** `ordenes:write`
+
+### Request body
+
+<ParamField body="cliente_id" type="integer" required>
+  ID of an active client placing the order.
+</ParamField>
+
+<ParamField body="direccion_origen" type="string" required>
+  Pick-up street address.
+</ParamField>
+
+<ParamField body="distrito_origen" type="string">
+  Pick-up district.
+</ParamField>
+
+<ParamField body="direccion_destino" type="string" required>
+  Delivery street address.
+</ParamField>
+
+<ParamField body="distrito_destino" type="string">
+  Delivery district.
+</ParamField>
+
+<ParamField body="total" type="number">
+  Order total amount.
+</ParamField>
+
+### Response `201`
+
+The newly created order object.
+
+```bash
+curl -X POST https://api.rappi2.com/api/ordenes \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "cliente_id": 42,
+    "direccion_origen": "Av. Javier Prado 500",
+    "distrito_origen": "San Isidro",
+    "direccion_destino": "Calle Las Flores 200",
+    "distrito_destino": "Surco",
+    "total": 35.50
+  }'
+```
+
+---
+
+## Get an order
+
+<ParamField path="GET /api/ordenes/{orden_id}" type="string" />
+
+Returns a single order by ID. Returns `404` if not found.
+
+**Required permission:** `ordenes:read`
+
+### Path parameters
+
+<ParamField path="orden_id" type="integer" required>
+  Order ID.
+</ParamField>
+
+### Response `200`
+
+Order object.
+
+```bash
+curl https://api.rappi2.com/api/ordenes/101 \
+  -H "Authorization: Bearer <token>"
+```
+
+---
+
+## Update an order
+
+<ParamField path="PATCH /api/ordenes/{orden_id}" type="string" />
+
+Partially updates an order. You can update addresses, total, or manually advance the `estado`. Note that normal state transitions are handled automatically by the Assignments API; direct state writes via this endpoint bypass those guard-rails.
+
+**Required permission:** `ordenes:write`
+
+### Path parameters
+
+<ParamField path="orden_id" type="integer" required>
+  Order ID.
+</ParamField>
+
+### Request body
+
+All fields are optional.
+
+<ParamField body="estado" type="string">
+  New state. One of `Pendiente`, `En Proceso`, `En Tránsito`, `Entregado`, `Cancelado`.
+</ParamField>
+
+<ParamField body="direccion_origen" type="string">
+  New pick-up address.
+</ParamField>
+
+<ParamField body="distrito_origen" type="string">
+  New pick-up district.
+</ParamField>
+
+<ParamField body="direccion_destino" type="string">
+  New delivery address.
+</ParamField>
+
+<ParamField body="distrito_destino" type="string">
+  New delivery district.
+</ParamField>
+
+<ParamField body="total" type="number">
+  Updated order total.
+</ParamField>
+
+### Response `200`
+
+Updated order object.
+
+```bash
+curl -X PATCH https://api.rappi2.com/api/ordenes/101 \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"total": 40.00}'
+```
+
+---
+
+## Cancel an order
+
+<ParamField path="DELETE /api/ordenes/{orden_id}" type="string" />
+
+Sets the order state to `Cancelado`. Returns `400` if the order is already cancelled. This is a soft operation — the order record is preserved.
+
+**Required permission:** `ordenes:delete`
+
+### Path parameters
+
+<ParamField path="orden_id" type="integer" required>
+  Order ID.
+</ParamField>
+
+### Response `204`
+
+No body.
+
+```bash
+curl -X DELETE https://api.rappi2.com/api/ordenes/101 \
+  -H "Authorization: Bearer <token>"
+```
+
+---
+
+## Payments
+
+Payments are linked to a specific order and track money transfers.
+
+### List all payments
+
+<ParamField path="GET /api/pagos" type="string" />
+
+Returns a global list of payments across all orders, newest first. Filter by status or date range.
+
+**Required permission:** `pagos:read`
+
+<ParamField query="skip" type="integer" default="0">Pagination offset.</ParamField>
+<ParamField query="limit" type="integer" default="50">Max records (cap 200).</ParamField>
+<ParamField query="estado" type="string">Filter by payment state: `Pendiente`, `Pagado`, `Fallido`, or `Reembolsado`.</ParamField>
+<ParamField query="desde" type="string (datetime)">Only payments on or after this ISO 8601 timestamp.</ParamField>
+<ParamField query="hasta" type="string (datetime)">Only payments on or before this ISO 8601 timestamp.</ParamField>
+
+```bash
+curl "https://api.rappi2.com/api/pagos?estado=Pendiente" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Create a payment for an order
+
+<ParamField path="POST /api/ordenes/{orden_id}/pagos" type="string" />
+
+**Required permission:** `pagos:write`
+
+<ParamField path="orden_id" type="integer" required>Order ID.</ParamField>
+
+<ParamField body="monto" type="number" required>Payment amount.</ParamField>
+<ParamField body="estado" type="string" default="Pendiente">Initial state: `Pendiente`, `Pagado`, `Fallido`, or `Reembolsado`.</ParamField>
+<ParamField body="referencia_banco" type="string">Bank reference or transaction ID.</ParamField>
+
+Response `201`: created payment object.
+
+<ResponseField name="id" type="integer" required>Payment ID.</ResponseField>
+<ResponseField name="orden_id" type="integer" required>Parent order ID.</ResponseField>
+<ResponseField name="monto" type="number" required>Amount paid.</ResponseField>
+<ResponseField name="estado" type="string" required>Payment state.</ResponseField>
+<ResponseField name="referencia_banco" type="string">Bank reference.</ResponseField>
+<ResponseField name="fecha_pago" type="string (datetime)">Timestamp of payment record creation.</ResponseField>
+
+```bash
+curl -X POST https://api.rappi2.com/api/ordenes/101/pagos \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"monto": 35.50, "estado": "Pagado", "referencia_banco": "TXN-9981"}'
+```
+
+### List payments for an order
+
+<ParamField path="GET /api/ordenes/{orden_id}/pagos" type="string" />
+
+**Required permission:** `pagos:read`
+
+<ParamField path="orden_id" type="integer" required>Order ID.</ParamField>
+
+Returns an array of payment objects for this order.
+
+```bash
+curl https://api.rappi2.com/api/ordenes/101/pagos \
+  -H "Authorization: Bearer <token>"
+```
+
+### Get a payment
+
+<ParamField path="GET /api/pagos/{pago_id}" type="string" />
+
+**Required permission:** `pagos:read`
+
+<ParamField path="pago_id" type="integer" required>Payment ID.</ParamField>
+
+```bash
+curl https://api.rappi2.com/api/pagos/55 \
+  -H "Authorization: Bearer <token>"
+```
+
+### Update a payment
+
+<ParamField path="PATCH /api/pagos/{pago_id}" type="string" />
+
+**Required permission:** `pagos:write`
+
+<ParamField path="pago_id" type="integer" required>Payment ID.</ParamField>
+<ParamField body="estado" type="string">New state.</ParamField>
+<ParamField body="referencia_banco" type="string">Updated bank reference.</ParamField>
+
+```bash
+curl -X PATCH https://api.rappi2.com/api/pagos/55 \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"estado": "Reembolsado"}'
+```
+
+### Delete a payment
+
+<ParamField path="DELETE /api/pagos/{pago_id}" type="string" />
+
+Permanently removes the payment record.
+
+**Required permission:** `pagos:delete`
+
+<ParamField path="pago_id" type="integer" required>Payment ID.</ParamField>
+
+Response `204`: no body.
+
+```bash
+curl -X DELETE https://api.rappi2.com/api/pagos/55 \
+  -H "Authorization: Bearer <token>"
+```
+
+---
+
+## Invoices
+
+Invoices (facturas) are generated for orders and can reference a RUC (tax ID).
+
+### List all invoices
+
+<ParamField path="GET /api/facturas" type="string" />
+
+Returns a global list of invoices, newest first.
+
+**Required permission:** `facturas:read`
+
+<ParamField query="skip" type="integer" default="0">Pagination offset.</ParamField>
+<ParamField query="limit" type="integer" default="50">Max records (cap 200).</ParamField>
+<ParamField query="ruc" type="string">Filter by tax ID (RUC).</ParamField>
+<ParamField query="desde" type="string (datetime)">Only invoices on or after this timestamp.</ParamField>
+<ParamField query="hasta" type="string (datetime)">Only invoices on or before this timestamp.</ParamField>
+
+```bash
+curl "https://api.rappi2.com/api/facturas?ruc=20501234567" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Create an invoice for an order
+
+<ParamField path="POST /api/ordenes/{orden_id}/facturas" type="string" />
+
+**Required permission:** `facturas:write`
+
+<ParamField path="orden_id" type="integer" required>Order ID.</ParamField>
+<ParamField body="monto" type="number" required>Invoice amount.</ParamField>
+<ParamField body="ruc" type="string">RUC (tax ID) of the billing entity.</ParamField>
+<ParamField body="url" type="string">URL to the PDF or external invoice document.</ParamField>
+
+Response `201`: created invoice object.
+
+<ResponseField name="id" type="integer" required>Invoice ID.</ResponseField>
+<ResponseField name="orden_id" type="integer" required>Parent order ID.</ResponseField>
+<ResponseField name="monto" type="number" required>Invoice amount.</ResponseField>
+<ResponseField name="ruc" type="string">Tax ID.</ResponseField>
+<ResponseField name="url" type="string">Document URL.</ResponseField>
+<ResponseField name="fecha" type="string (datetime)">Invoice creation timestamp.</ResponseField>
+
+```bash
+curl -X POST https://api.rappi2.com/api/ordenes/101/facturas \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"monto": 35.50, "ruc": "20501234567", "url": "https://storage.example.com/f001.pdf"}'
+```
+
+### List invoices for an order
+
+<ParamField path="GET /api/ordenes/{orden_id}/facturas" type="string" />
+
+**Required permission:** `facturas:read`
+
+<ParamField path="orden_id" type="integer" required>Order ID.</ParamField>
+
+```bash
+curl https://api.rappi2.com/api/ordenes/101/facturas \
+  -H "Authorization: Bearer <token>"
+```
+
+### Get an invoice
+
+<ParamField path="GET /api/facturas/{factura_id}" type="string" />
+
+**Required permission:** `facturas:read`
+
+<ParamField path="factura_id" type="integer" required>Invoice ID.</ParamField>
+
+```bash
+curl https://api.rappi2.com/api/facturas/12 \
+  -H "Authorization: Bearer <token>"
+```
+
+### Update an invoice
+
+<ParamField path="PATCH /api/facturas/{factura_id}" type="string" />
+
+**Required permission:** `facturas:write`
+
+<ParamField path="factura_id" type="integer" required>Invoice ID.</ParamField>
+<ParamField body="ruc" type="string">New RUC.</ParamField>
+<ParamField body="monto" type="number">Updated amount.</ParamField>
+<ParamField body="url" type="string">Updated document URL.</ParamField>
+
+```bash
+curl -X PATCH https://api.rappi2.com/api/facturas/12 \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://storage.example.com/f001-v2.pdf"}'
+```
+
+### Delete an invoice
+
+<ParamField path="DELETE /api/facturas/{factura_id}" type="string" />
+
+Permanently removes the invoice.
+
+**Required permission:** `facturas:delete`
+
+<ParamField path="factura_id" type="integer" required>Invoice ID.</ParamField>
+
+Response `204`: no body.
+
+```bash
+curl -X DELETE https://api.rappi2.com/api/facturas/12 \
+  -H "Authorization: Bearer <token>"
+```

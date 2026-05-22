@@ -1,0 +1,183 @@
+---
+title: "Role-based access control in Rappi2"
+description: "Rappi2 uses RBAC with roles and (recurso, accion) permission pairs. Wildcard resources and actions simplify broad grants; a 60s in-memory cache minimizes DB lookups."
+---
+
+Every protected endpoint in Rappi2 enforces role-based access control. A user belongs to exactly one role, and a role carries a set of permissions. Each permission is a `(recurso, accion)` pair that grants access to a specific resource and action. Wildcards let a single permission span all resources or all actions, making it easy to grant broad access to administrative roles without enumerating every endpoint.
+
+## How permissions work
+
+A **permission** is a row in the `permisos` table with three fields:
+
+| Field | Type | Example values |
+|---|---|---|
+| `recurso` | varchar(50) | `ordenes`, `conductores`, `roles`, `*` |
+| `accion` | varchar(20) | `read`, `write`, `delete`, `*` |
+| `rol_id` | integer | FK → `roles.id` |
+
+A unique constraint on `(rol_id, recurso, accion)` prevents duplicate entries.
+
+When the API evaluates a request, it iterates the caller's permission list and checks:
+
+```python
+for r, a in permisos:
+    if (r == "*" or r == recurso) and (a == "*" or a == accion):
+        return user  # access granted
+```
+
+- `recurso = "*"` grants access to **every resource** for the given action.
+- `accion = "*"` grants **every action** on the given resource.
+- `recurso = "*"` and `accion = "*"` together grant **full access** to everything.
+
+If no matching permission is found, the API returns `403 Forbidden` with the message `Sin permiso para {recurso}:{accion}`.
+
+## Built-in roles
+
+Rappi2 ships with four roles created by the seed script. You can create additional roles via the API.
+
+| Role | Typical permissions | Use case |
+|---|---|---|
+| **Admin** | `recurso="*"`, `accion="*"` | Full platform access for operators |
+| **Despachador** | Varies | Dispatch staff managing assignments and routes |
+| **Cliente** | `ordenes:read`, `ordenes:write` | Customers creating and tracking orders |
+| **Conductor** | `tracking:write` | Drivers submitting GPS pings |
+
+<Note>
+Only users with the `roles:write` permission can create roles or add permissions. In practice this means only Admin-level users can manage the role hierarchy.
+</Note>
+
+## Checking permissions
+
+Every protected endpoint declares its required permission using the `require_permiso` dependency:
+
+```python
+# api/dependencies.py
+def require_permiso(recurso: str, accion: str):
+    async def _checker(
+        user: Usuario = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ) -> Usuario:
+        permisos = await _cargar_permisos(db, user.rol_id)
+        for r, a in permisos:
+            if (r == "*" or r == recurso) and (a == "*" or a == accion):
+                return user
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Sin permiso para {recurso}:{accion}",
+        )
+    return _checker
+```
+
+Usage in a router:
+
+```python
+@router.get("/", response_model=list[RolResponse])
+async def list_roles(
+    db: AsyncSession = Depends(get_db),
+    _: object = Depends(require_permiso("roles", "read")),
+):
+    ...
+```
+
+`get_current_user` validates the `Authorization: Bearer` token, loads the `Usuario` row with its role, and rejects inactive users with `401 Unauthorized`. `require_permiso` then checks the role's permissions and rejects unauthorized callers with `403 Forbidden`.
+
+## Permission cache
+
+Loading permissions from PostgreSQL on every request would be expensive. Rappi2 keeps an in-memory cache keyed by `rol_id`:
+
+```python
+_PERMISO_CACHE: dict[int, tuple[float, list[tuple[str, str]]]] = {}
+_PERMISO_TTL_SECONDS = 60
+```
+
+Each cache entry stores `(loaded_at_monotonic, [(recurso, accion), ...])`. Entries older than 60 seconds are discarded and reloaded on the next request. When a role's permissions are modified (via `POST`, `DELETE` on permissions, or `PATCH` on a role), `invalidar_cache_permisos(rol_id)` evicts the stale entry immediately.
+
+<Note>
+The cache is process-local. If you run multiple worker processes, each process maintains its own cache and may serve slightly stale permissions for up to 60 seconds after a change. For single-worker deployments this is not a concern.
+</Note>
+
+## Managing roles via API
+
+All role management endpoints are under `/api/roles` and require the `roles:read` or `roles:write` permission.
+
+### List all roles
+
+```bash
+curl -X GET https://api.example.com/api/roles \
+  -H "Authorization: Bearer <token>"
+```
+
+```json
+[
+  {
+    "id": 1,
+    "nombre": "Admin",
+    "permisos": [
+      { "id": 1, "rol_id": 1, "recurso": "*", "accion": "*" }
+    ]
+  },
+  {
+    "id": 2,
+    "nombre": "Cliente",
+    "permisos": [
+      { "id": 2, "rol_id": 2, "recurso": "ordenes", "accion": "read" },
+      { "id": 3, "rol_id": 2, "recurso": "ordenes", "accion": "write" }
+    ]
+  }
+]
+```
+
+### Create a role
+
+```bash
+curl -X POST https://api.example.com/api/roles \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"nombre": "Supervisor"}'
+```
+
+```json
+{
+  "id": 4,
+  "nombre": "Supervisor",
+  "permisos": []
+}
+```
+
+### Add a permission to a role
+
+```bash
+curl -X POST https://api.example.com/api/roles/4/permisos \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"recurso": "asignaciones", "accion": "read"}'
+```
+
+```json
+{
+  "id": 10,
+  "rol_id": 4,
+  "recurso": "asignaciones",
+  "accion": "read"
+}
+```
+
+### Remove a permission from a role
+
+```bash
+curl -X DELETE https://api.example.com/api/roles/4/permisos/10 \
+  -H "Authorization: Bearer <token>"
+```
+
+Returns `204 No Content` on success.
+
+### Delete a role
+
+```bash
+curl -X DELETE https://api.example.com/api/roles/4 \
+  -H "Authorization: Bearer <token>"
+```
+
+<Note>
+You cannot delete a role that still has users assigned to it. The API returns `409 Conflict` with the message `No se puede eliminar el rol: tiene usuarios asociados. Reasigna esos usuarios a otro rol antes de borrarlo.` Reassign all affected users before deleting the role.
+</Note>

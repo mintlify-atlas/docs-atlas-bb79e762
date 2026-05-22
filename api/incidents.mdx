@@ -1,0 +1,430 @@
+---
+title: "Incidents API — report and track delivery issues"
+description: "Create and manage incidents linked to assignments, upload file evidence to GridFS, and download attachments, with 1–5 severity levels."
+---
+
+The Incidents API manages problems that arise during deliveries. Each incident is linked to an assignment (`asignacion_id`), carries a `tipo` string and a numeric `severidad` (1–5). File evidence — photos, videos, audio, or documents — can be attached via a multipart upload endpoint and is stored in MongoDB GridFS.
+
+<Info>All endpoints require a valid Bearer token. The required permission is noted on each operation.</Info>
+
+---
+
+## List incidents
+
+`GET /incidencias`
+
+Returns incidents in descending date order with optional filters.
+
+**Permission:** `incidencias:read`
+
+<ParamField query="skip" type="integer" default="0">
+  Number of records to skip for pagination.
+</ParamField>
+
+<ParamField query="limit" type="integer" default="50">
+  Maximum records to return (max `200`).
+</ParamField>
+
+<ParamField query="asignacion_id" type="integer">
+  Filter to incidents for a specific assignment.
+</ParamField>
+
+<ParamField query="severidad_min" type="integer">
+  Return only incidents with `severidad >= severidad_min`.
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X GET "https://api.rappi2.com/incidencias?asignacion_id=101&severidad_min=3" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+[
+  {
+    "id": 15,
+    "asignacion_id": 101,
+    "tipo": "paquete_dañado",
+    "severidad": 4,
+    "notas": "La caja llegó aplastada.",
+    "evidencia_url": null,
+    "fecha": "2026-05-22T13:45:00Z"
+  }
+]
+```
+</ResponseExample>
+
+---
+
+## Create incident
+
+`POST /incidencias`
+
+Create a new incident for an existing assignment.
+
+**Permission:** `incidencias:write`
+
+<ParamField body="asignacion_id" type="integer" required>
+  ID of the assignment during which the incident occurred. Must reference an existing assignment.
+</ParamField>
+
+<ParamField body="tipo" type="string" required>
+  Incident type label (free-form string, e.g. `"paquete_dañado"`, `"accidente"`, `"robo"`).
+</ParamField>
+
+<ParamField body="severidad" type="integer" required>
+  Severity level from `1` (minor) to `5` (critical).
+</ParamField>
+
+<ParamField body="notas" type="string">
+  Free-text description or additional context.
+</ParamField>
+
+<ParamField body="evidencia_url" type="string">
+  Optional URL pointing to an external evidence resource.
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X POST "https://api.rappi2.com/incidencias" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "asignacion_id": 101,
+    "tipo": "paquete_dañado",
+    "severidad": 4,
+    "notas": "La caja llegó aplastada."
+  }'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 201
+{
+  "id": 15,
+  "asignacion_id": 101,
+  "tipo": "paquete_dañado",
+  "severidad": 4,
+  "notas": "La caja llegó aplastada.",
+  "evidencia_url": null,
+  "fecha": "2026-05-22T13:45:00Z"
+}
+```
+</ResponseExample>
+
+---
+
+## Get incident
+
+`GET /incidencias/{incidencia_id}`
+
+Retrieve a single incident by ID.
+
+**Permission:** `incidencias:read`
+
+<ParamField path="incidencia_id" type="integer" required>
+  Incident ID.
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X GET "https://api.rappi2.com/incidencias/15" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+---
+
+## Update incident
+
+`PATCH /incidencias/{incidencia_id}`
+
+Partially update an incident's type, severity, notes, or evidence URL.
+
+**Permission:** `incidencias:write`
+
+<ParamField path="incidencia_id" type="integer" required>
+  Incident ID.
+</ParamField>
+
+<ParamField body="tipo" type="string">
+  Updated incident type label.
+</ParamField>
+
+<ParamField body="severidad" type="integer">
+  Updated severity (`1`–`5`).
+</ParamField>
+
+<ParamField body="notas" type="string">
+  Updated notes.
+</ParamField>
+
+<ParamField body="evidencia_url" type="string">
+  Updated external evidence URL.
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X PATCH "https://api.rappi2.com/incidencias/15" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"severidad": 5, "notas": "Confirmado: pérdida total del paquete."}'
+```
+</RequestExample>
+
+---
+
+## Delete incident
+
+`DELETE /incidencias/{incidencia_id}`
+
+Deletes the incident and cascades deletion to all associated evidence documents and GridFS files.
+
+**Permission:** `incidencias:delete`
+
+<Warning>Deleting an incident permanently removes all linked evidence files from GridFS. This action is irreversible.</Warning>
+
+<ParamField path="incidencia_id" type="integer" required>
+  Incident ID.
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X DELETE "https://api.rappi2.com/incidencias/15" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 204
+```
+</ResponseExample>
+
+---
+
+## Upload evidence files
+
+`POST /incidencias/{incidencia_id}/evidencias/upload`
+
+Uploads one or more files for an incident and stores them in MongoDB GridFS. Returns the created evidence document with references to each stored file.
+
+**Permission:** `incidencias:write`
+
+<Note>This endpoint uses `multipart/form-data`, not JSON.</Note>
+
+<ParamField path="incidencia_id" type="integer" required>
+  Incident ID.
+</ParamField>
+
+<ParamField body="tipo" type="string" required>
+  Evidence type: `foto`, `video`, `audio`, or `documento`.
+</ParamField>
+
+<ParamField body="descripcion" type="string">
+  Optional description for this set of files.
+</ParamField>
+
+<ParamField body="archivos" type="file[]" required>
+  One or more files to upload (photo, video, audio, or document).
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X POST "https://api.rappi2.com/incidencias/15/evidencias/upload" \
+  -H "Authorization: Bearer <token>" \
+  -F "tipo=foto" \
+  -F "descripcion=Foto del daño en el embalaje" \
+  -F "archivos=@/path/to/damage.jpg"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 201
+{
+  "id": "664f2b3c4d5e6f7a8b9c0d1e",
+  "incidencia_id": 15,
+  "urls": [],
+  "archivos": [
+    {
+      "file_id": "664f2b3c4d5e6f7a8b9c0d1f",
+      "filename": "damage.jpg",
+      "content_type": "image/jpeg",
+      "size": 204800
+    }
+  ],
+  "tipo": "foto",
+  "descripcion": "Foto del daño en el embalaje",
+  "uploaded_by": 3,
+  "timestamp": "2026-05-22T14:10:00Z"
+}
+```
+</ResponseExample>
+
+---
+
+## List evidence for incident
+
+`GET /incidencias/{incidencia_id}/evidencias`
+
+Returns all evidence documents linked to an incident, ordered by `timestamp` descending.
+
+**Permission:** `incidencias:read`
+
+<ParamField path="incidencia_id" type="integer" required>
+  Incident ID.
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X GET "https://api.rappi2.com/incidencias/15/evidencias" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+---
+
+## Get evidence document
+
+`GET /incidencias/evidencias/{evidencia_id}`
+
+Retrieve a single evidence document by its MongoDB ObjectId.
+
+**Permission:** `incidencias:read`
+
+<ParamField path="evidencia_id" type="string" required>
+  MongoDB ObjectId of the evidence document.
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X GET "https://api.rappi2.com/incidencias/evidencias/664f2b3c4d5e6f7a8b9c0d1e" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+---
+
+## Download evidence file
+
+`GET /incidencias/evidencias/archivos/{file_id}`
+
+Streams a raw file from GridFS. The response `Content-Type` is set from the metadata stored at upload time.
+
+**Permission:** `incidencias:read`
+
+<ParamField path="file_id" type="string" required>
+  GridFS ObjectId of the file (from an `archivos[].file_id` field on an evidence document).
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X GET "https://api.rappi2.com/incidencias/evidencias/archivos/664f2b3c4d5e6f7a8b9c0d1f" \
+  -H "Authorization: Bearer <token>" \
+  --output damage.jpg
+```
+</RequestExample>
+
+---
+
+## Delete evidence document
+
+`DELETE /incidencias/evidencias/{evidencia_id}`
+
+Deletes the evidence document and all its associated GridFS files.
+
+**Permission:** `incidencias:delete`
+
+<Warning>All files referenced by `archivos` are permanently deleted from GridFS.</Warning>
+
+<ParamField path="evidencia_id" type="string" required>
+  MongoDB ObjectId of the evidence document.
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X DELETE "https://api.rappi2.com/incidencias/evidencias/664f2b3c4d5e6f7a8b9c0d1e" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 204
+```
+</ResponseExample>
+
+---
+
+## Incident response schema
+
+<ResponseField name="id" type="integer" required>
+  Incident ID (auto-incremented).
+</ResponseField>
+
+<ResponseField name="asignacion_id" type="integer" required>
+  Assignment during which the incident occurred.
+</ResponseField>
+
+<ResponseField name="tipo" type="string" required>
+  Incident type label.
+</ResponseField>
+
+<ResponseField name="severidad" type="integer" required>
+  Severity on a scale of `1` (minor) to `5` (critical).
+</ResponseField>
+
+<ResponseField name="notas" type="string">
+  Free-text description.
+</ResponseField>
+
+<ResponseField name="evidencia_url" type="string">
+  URL to an external evidence resource.
+</ResponseField>
+
+<ResponseField name="fecha" type="string" required>
+  ISO 8601 datetime when the incident was recorded.
+</ResponseField>
+
+---
+
+## Evidence response schema
+
+<ResponseField name="id" type="string" required>
+  MongoDB ObjectId of the evidence document.
+</ResponseField>
+
+<ResponseField name="incidencia_id" type="integer" required>
+  Linked incident ID.
+</ResponseField>
+
+<ResponseField name="tipo" type="string" required>
+  One of `foto`, `video`, `audio`, `documento`.
+</ResponseField>
+
+<ResponseField name="archivos" type="object[]" required>
+  List of GridFS file references.
+
+  <Expandable title="archivo fields">
+    <ResponseField name="file_id" type="string" required>GridFS ObjectId of the file.</ResponseField>
+    <ResponseField name="filename" type="string" required>Original filename.</ResponseField>
+    <ResponseField name="content_type" type="string">MIME type of the file.</ResponseField>
+    <ResponseField name="size" type="integer" required>File size in bytes.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="urls" type="string[]">
+  List of external URLs (populated when evidence is linked by URL rather than file upload).
+</ResponseField>
+
+<ResponseField name="descripcion" type="string">
+  Description of the evidence.
+</ResponseField>
+
+<ResponseField name="uploaded_by" type="integer">
+  User ID of the uploader.
+</ResponseField>
+
+<ResponseField name="timestamp" type="string" required>
+  ISO 8601 creation timestamp.
+</ResponseField>

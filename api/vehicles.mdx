@@ -1,0 +1,230 @@
+---
+title: "Vehicles API — manage the delivery fleet"
+description: "CRUD for fleet vehicles identified by licence plate (placa), with estado values Operativo, Mantenimiento, and Inactivo and soft-delete support."
+---
+
+The Vehicles API manages the physical fleet used for deliveries. Unlike most resources in the Rappi2 API, vehicles are identified by their `placa` (licence plate string) rather than an integer ID — use the plate value wherever a path parameter is shown as `{placa}`. Deleting a vehicle performs a soft delete, setting `activo = false` and `estado = Inactivo`.
+
+---
+
+## Vehicle states
+
+| State | Description |
+|---|---|
+| `Operativo` | Vehicle is ready and can be assigned to deliveries. |
+| `Mantenimiento` | Vehicle is temporarily out of service for maintenance. |
+| `Inactivo` | Vehicle is permanently decommissioned (soft-deleted). |
+
+<Warning>
+Only vehicles in `Operativo` state can be assigned to drivers via `PATCH /conductores/{id}/vehiculo` or used in new assignments.
+</Warning>
+
+---
+
+## List vehicles
+
+<ParamField path="GET /api/vehiculos" type="string" />
+
+Returns a paginated list of vehicles, optionally filtered by active status or operational state.
+
+**Required permission:** `vehiculos:read`
+
+### Query parameters
+
+<ParamField query="skip" type="integer" default="0">
+  Number of records to skip for pagination.
+</ParamField>
+
+<ParamField query="limit" type="integer" default="50">
+  Maximum number of records to return. Hard cap: 200.
+</ParamField>
+
+<ParamField query="activo" type="boolean" default="true">
+  Filter by active status.
+</ParamField>
+
+<ParamField query="estado" type="string">
+  Filter by operational state: `Operativo`, `Mantenimiento`, or `Inactivo`.
+</ParamField>
+
+### Response `200`
+
+Array of vehicle objects.
+
+<ResponseField name="placa" type="string" required>
+  Licence plate — the unique primary key for this resource.
+</ResponseField>
+
+<ResponseField name="tipo" type="string" required>
+  Vehicle category (e.g. `moto`, `camioneta`, `furgon`).
+</ResponseField>
+
+<ResponseField name="capacidad_kg" type="number" required>
+  Maximum payload capacity in kilograms.
+</ResponseField>
+
+<ResponseField name="estado" type="string" required>
+  Operational state: `Operativo`, `Mantenimiento`, or `Inactivo`.
+</ResponseField>
+
+<ResponseField name="fecha_mantenimiento" type="string (datetime)">
+  Timestamp of the last or next scheduled maintenance (ISO 8601).
+</ResponseField>
+
+<ResponseField name="activo" type="boolean" required>
+  Whether the vehicle record is active.
+</ResponseField>
+
+```bash
+curl "https://api.rappi2.com/api/vehiculos?estado=Operativo" \
+  -H "Authorization: Bearer <token>"
+```
+
+---
+
+## Create a vehicle
+
+<ParamField path="POST /api/vehiculos" type="string" />
+
+Registers a new vehicle in the fleet. Returns `400` if the plate is already registered.
+
+**Required permission:** `vehiculos:write`
+
+### Request body
+
+<ParamField body="placa" type="string" required>
+  Licence plate. Maximum 15 characters. Must be unique.
+</ParamField>
+
+<ParamField body="tipo" type="string" required>
+  Vehicle category.
+</ParamField>
+
+<ParamField body="capacidad_kg" type="number" required>
+  Maximum payload in kilograms.
+</ParamField>
+
+<ParamField body="estado" type="string" default="Operativo">
+  Initial operational state: `Operativo`, `Mantenimiento`, or `Inactivo`.
+</ParamField>
+
+<ParamField body="fecha_mantenimiento" type="string (datetime)">
+  Maintenance date (ISO 8601 timestamp).
+</ParamField>
+
+### Response `201`
+
+The newly created vehicle object.
+
+```bash
+curl -X POST https://api.rappi2.com/api/vehiculos \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "placa": "ABC-123",
+    "tipo": "moto",
+    "capacidad_kg": 50.00,
+    "estado": "Operativo"
+  }'
+```
+
+---
+
+## Get a vehicle
+
+<ParamField path="GET /api/vehiculos/{placa}" type="string" />
+
+Returns a single vehicle by its licence plate. Returns `404` if not found.
+
+**Required permission:** `vehiculos:read`
+
+### Path parameters
+
+<ParamField path="placa" type="string" required>
+  Licence plate of the vehicle.
+</ParamField>
+
+### Response `200`
+
+Vehicle object.
+
+```bash
+curl https://api.rappi2.com/api/vehiculos/ABC-123 \
+  -H "Authorization: Bearer <token>"
+```
+
+---
+
+## Update a vehicle
+
+<ParamField path="PATCH /api/vehiculos/{placa}" type="string" />
+
+Partially updates a vehicle record. Only fields provided in the request body are changed.
+
+**Required permission:** `vehiculos:write`
+
+### Path parameters
+
+<ParamField path="placa" type="string" required>
+  Licence plate of the vehicle.
+</ParamField>
+
+### Request body
+
+All fields are optional.
+
+<ParamField body="tipo" type="string">
+  New vehicle category.
+</ParamField>
+
+<ParamField body="capacidad_kg" type="number">
+  New payload capacity in kilograms.
+</ParamField>
+
+<ParamField body="estado" type="string">
+  New operational state: `Operativo`, `Mantenimiento`, or `Inactivo`.
+</ParamField>
+
+<ParamField body="fecha_mantenimiento" type="string (datetime)">
+  Updated maintenance timestamp.
+</ParamField>
+
+<ParamField body="activo" type="boolean">
+  Toggle the active flag.
+</ParamField>
+
+### Response `200`
+
+Updated vehicle object.
+
+```bash
+curl -X PATCH https://api.rappi2.com/api/vehiculos/ABC-123 \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"estado": "Mantenimiento", "fecha_mantenimiento": "2026-06-01T08:00:00Z"}'
+```
+
+---
+
+## Decommission a vehicle
+
+<ParamField path="DELETE /api/vehiculos/{placa}" type="string" />
+
+Soft-deletes the vehicle by setting `activo = false` and `estado = Inactivo`. The record is preserved in the database.
+
+**Required permission:** `vehiculos:delete`
+
+### Path parameters
+
+<ParamField path="placa" type="string" required>
+  Licence plate of the vehicle.
+</ParamField>
+
+### Response `204`
+
+No body.
+
+```bash
+curl -X DELETE https://api.rappi2.com/api/vehiculos/ABC-123 \
+  -H "Authorization: Bearer <token>"
+```

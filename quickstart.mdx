@@ -1,81 +1,120 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
-icon: 'rocket'
+title: "Get started with Rappi2"
+description: "Deploy Rappi2 locally with Docker Compose in five steps: clone, configure .env, start services, run Alembic migrations, seed the admin user, and call your first endpoint."
 ---
 
-## Get started in three steps
+This quickstart walks you through spinning up a local Rappi2 instance using Docker Compose, initializing the database, creating the default admin user, and authenticating against the API for the first time.
 
-Get your documentation site running locally and make your first customization.
+<Steps>
+  <Step title="Clone and configure">
+    Clone the repository and create your `.env` file from the provided example:
 
-### Step 1: Set up your local environment
+    ```bash
+    git clone https://github.com/JorLOrT/rappi2.git
+    cd rappi2
+    cp .env.example .env
+    ```
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+    Open `.env` and set the required variables:
 
-### Step 2: Deploy your changes
+    ```bash
+    # PostgreSQL
+    POSTGRES_USER=postgres
+    POSTGRES_PASSWORD=postgres
+    POSTGRES_DB=rappi2
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    # MongoDB
+    MONGO_USER=admin
+    MONGO_PASSWORD=admin
+    MONGO_DB=rappi2_mongo
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+    # Connection URLs (update credentials if you changed them above)
+    DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/rappi2
+    MONGO_URL=mongodb://admin:admin@mongodb:27017/
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+    # JWT signing key — replace this before deploying to any shared environment
+    SECRET_KEY=change_me_to_a_random_64_char_string_in_production
 
-### Step 3: Go live
+    # Token lifetimes
+    ACCESS_TOKEN_EXPIRE_MINUTES=15
+    REFRESH_TOKEN_EXPIRE_DAYS=7
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+    # OpenRouteService key (required for route planning; optional otherwise)
+    ORS_API_KEY=your_openrouteservice_api_key_here
+    ```
 
-## Next steps
+    <Warning>
+      Never commit a real `SECRET_KEY` to version control. Generate one with `openssl rand -hex 32` and keep it out of your repository.
+    </Warning>
+  </Step>
 
-Now that you have your docs running, explore these key features:
+  <Step title="Start with Docker Compose">
+    Build and start all three services (PostgreSQL, MongoDB, and the API):
 
-<CardGroup cols={2}>
+    ```bash
+    docker-compose up -d
+    ```
 
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
+    Docker Compose will wait for both databases to pass their health checks before starting the API container. Once complete, the API is available at `http://localhost:8000`.
+  </Step>
 
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
+  <Step title="Run database migrations">
+    Apply all Alembic migrations to initialize the PostgreSQL schema:
 
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
+    ```bash
+    docker-compose exec api alembic upgrade head
+    ```
 
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
+    This creates every table the API depends on. Run this command again whenever you pull changes that include new migrations.
+  </Step>
 
-</CardGroup>
+  <Step title="Seed the admin user">
+    Populate the default roles (`Admin`, `Despachador`, `Conductor`, `Cliente`), grant the Admin role wildcard permissions, and create the initial `admin` user:
 
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+    ```bash
+    docker-compose exec api python -m scripts.seed_admin
+    ```
+
+    The script creates the user `admin` with password `admin123`. Change this password immediately in any environment accessible to others.
+
+    <Tip>
+      The seed script is idempotent — running it more than once will not create duplicate records.
+    </Tip>
+  </Step>
+
+  <Step title="Make your first request">
+    Log in to obtain a JWT token pair, then call a protected endpoint to confirm everything is working.
+
+    **Step 5a — Log in:**
+
+    ```bash
+    curl -s -X POST http://localhost:8000/api/auth/login \
+      -F "username=admin" \
+      -F "password=admin123"
+    ```
+
+    The response contains an `access_token` and a `refresh_token`:
+
+    ```json
+    {
+      "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "refresh_token": "dGhpcyBpcyBhIHJhbmRvbSByZWZyZXNoIHRva2Vu...",
+      "token_type": "bearer",
+      "expires_in": 900
+    }
+    ```
+
+    **Step 5b — Call a protected endpoint:**
+
+    ```bash
+    curl -s http://localhost:8000/api/auth/me \
+      -H "Authorization: Bearer <your_access_token>"
+    ```
+
+    A successful response returns your user profile, confirming the API is running and your token is valid.
+
+    <Note>
+      The interactive API explorer is available at `http://localhost:8000/docs`. You can authorize there using the **Authorize** button and test every endpoint without writing curl commands.
+    </Note>
+  </Step>
+</Steps>

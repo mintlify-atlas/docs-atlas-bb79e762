@@ -1,0 +1,638 @@
+---
+title: "Reports API — KPIs, SLA, and analytics endpoints"
+description: "Read-only analytics endpoints: dashboard KPIs, sales series, SLA compliance, driver efficiency, incident summaries, and real-time operational status across Postgres and MongoDB."
+---
+
+The Reports API provides pre-computed analytics by querying PostgreSQL (orders, assignments, conductors, payments) and MongoDB (tracking, geofences, evidences, notifications). All endpoints are read-only and require the `reportes:read` permission.
+
+<Info>All endpoints require `Authorization: Bearer <token>` and the `reportes:read` permission.</Info>
+
+---
+
+## Dashboard
+
+`GET /reportes/dashboard`
+
+High-level operational KPIs for the past 24 hours and overall entity counts.
+
+<RequestExample>
+```bash cURL
+curl -X GET "https://api.rappi2.com/reportes/dashboard" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "totales": {
+    "clientes": 142,
+    "usuarios": 18,
+    "conductores": 34,
+    "vehiculos": 29,
+    "ordenes": 1820,
+    "asignaciones": 1750
+  },
+  "ordenes_por_estado": {
+    "Pendiente": 42,
+    "En Proceso": 15,
+    "En Tránsito": 8,
+    "Entregado": 1700,
+    "Cancelado": 55
+  },
+  "conductores_por_disponibilidad": {
+    "Disponible": 20,
+    "Ocupado": 12,
+    "Inactivo": 2
+  },
+  "vehiculos_por_estado": {
+    "Operativo": 25,
+    "Mantenimiento": 3,
+    "Inactivo": 1
+  },
+  "recaudacion_ultimas_24h": 4820.50,
+  "incidencias_severidad_alta": 3
+}
+```
+</ResponseExample>
+
+<ResponseField name="totales" type="object" required>
+  Count of active entities per type.
+  <Expandable title="fields">
+    <ResponseField name="clientes" type="integer">Active clients.</ResponseField>
+    <ResponseField name="usuarios" type="integer">Active platform users.</ResponseField>
+    <ResponseField name="conductores" type="integer">Active drivers.</ResponseField>
+    <ResponseField name="vehiculos" type="integer">Active vehicles.</ResponseField>
+    <ResponseField name="ordenes" type="integer">Total orders.</ResponseField>
+    <ResponseField name="asignaciones" type="integer">Total assignments.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="ordenes_por_estado" type="object" required>
+  Order count keyed by `EstadoOrden` value.
+</ResponseField>
+
+<ResponseField name="conductores_por_disponibilidad" type="object" required>
+  Driver count keyed by `DisponibilidadConductor` value.
+</ResponseField>
+
+<ResponseField name="vehiculos_por_estado" type="object" required>
+  Vehicle count keyed by `EstadoVehiculo` value.
+</ResponseField>
+
+<ResponseField name="recaudacion_ultimas_24h" type="number" required>
+  Sum of confirmed payments (`estado = "Pagado"`) in the last 24 hours.
+</ResponseField>
+
+<ResponseField name="incidencias_severidad_alta" type="integer" required>
+  Count of incidents with `severidad >= 3`.
+</ResponseField>
+
+---
+
+## Sales report
+
+`GET /reportes/ventas`
+
+Revenue aggregated by day or month. Defaults to the last 30 days when `desde`/`hasta` are omitted.
+
+<ParamField query="desde" type="string">
+  ISO 8601 datetime — start of the reporting window. Defaults to 30 days before `hasta`.
+</ParamField>
+
+<ParamField query="hasta" type="string">
+  ISO 8601 datetime — end of the reporting window. Defaults to now.
+</ParamField>
+
+<ParamField query="granularidad" type="string" default="dia">
+  Aggregation bucket: `dia` (daily) or `mes` (monthly).
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X GET "https://api.rappi2.com/reportes/ventas?granularidad=mes&desde=2026-01-01T00:00:00Z" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "desde": "2026-01-01T00:00:00Z",
+  "hasta": "2026-05-22T14:00:00Z",
+  "granularidad": "mes",
+  "series": [
+    {"periodo": "2026-01-01T00:00:00Z", "pagos": 320, "monto": 48200.00},
+    {"periodo": "2026-02-01T00:00:00Z", "pagos": 290, "monto": 43500.00}
+  ],
+  "total_recaudado": 91700.00,
+  "total_facturado": 95000.00
+}
+```
+</ResponseExample>
+
+---
+
+## Top clients
+
+`GET /reportes/top-clientes`
+
+Ranks clients by total confirmed payment amount.
+
+<ParamField query="limit" type="integer" default="10">
+  Number of top clients to return (`1`–`50`).
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X GET "https://api.rappi2.com/reportes/top-clientes?limit=5" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+[
+  {
+    "cliente_id": 7,
+    "nombre": "Logística Sur S.A.",
+    "email": "contacto@logisticasur.pe",
+    "ordenes": 142,
+    "recaudado": 28400.00
+  }
+]
+```
+</ResponseExample>
+
+---
+
+## Driver metrics
+
+`GET /reportes/conductores`
+
+Per-driver summary: total assignments, completed, active, and linked incident count.
+
+<RequestExample>
+```bash cURL
+curl -X GET "https://api.rappi2.com/reportes/conductores" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+[
+  {
+    "conductor_id": 5,
+    "nombre": "Carlos Quispe",
+    "disponibilidad": "Disponible",
+    "vehiculo_placa": "ABC-123",
+    "total_asignaciones": 87,
+    "finalizadas": 82,
+    "en_curso": 1,
+    "incidencias": 3
+  }
+]
+```
+</ResponseExample>
+
+---
+
+## Driver efficiency
+
+`GET /reportes/conductores/eficiencia`
+
+Per-driver efficiency metrics: deliveries per hour and incident rate, for active drivers only.
+
+<ParamField query="desde" type="string">
+  ISO 8601 datetime — start of the analysis window.
+</ParamField>
+
+<ParamField query="hasta" type="string">
+  ISO 8601 datetime — end of the analysis window.
+</ParamField>
+
+<ParamField query="limit" type="integer" default="20">
+  Maximum rows to return (`1`–`200`). Ordered by `entregas_por_hora` descending.
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X GET "https://api.rappi2.com/reportes/conductores/eficiencia?desde=2026-05-01T00:00:00Z&limit=10" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+[
+  {
+    "conductor_id": 5,
+    "nombre": "Carlos Quispe",
+    "entregas_finalizadas": 82,
+    "horas_activas": 134.5,
+    "entregas_por_hora": 0.61,
+    "incidencias": 3,
+    "incidencias_severas": 1,
+    "tasa_incidencias": 0.037
+  }
+]
+```
+</ResponseExample>
+
+<ResponseField name="conductor_id" type="integer" required>Driver ID.</ResponseField>
+<ResponseField name="nombre" type="string" required>Driver name.</ResponseField>
+<ResponseField name="entregas_finalizadas" type="integer" required>Number of completed deliveries in the window.</ResponseField>
+<ResponseField name="horas_activas" type="number" required>Total active hours (sum of assignment durations).</ResponseField>
+<ResponseField name="entregas_por_hora" type="number">Deliveries per active hour. `null` when `horas_activas` is 0.</ResponseField>
+<ResponseField name="incidencias" type="integer" required>Total incidents across all assignments.</ResponseField>
+<ResponseField name="incidencias_severas" type="integer" required>Incidents with `severidad >= 3`.</ResponseField>
+<ResponseField name="tasa_incidencias" type="number">Incidents per delivery. `null` when `entregas_finalizadas` is 0.</ResponseField>
+
+---
+
+## Incident summary
+
+`GET /reportes/incidencias`
+
+Incident counts broken down by severity level and type, in an optional time window.
+
+<ParamField query="desde" type="string">
+  ISO 8601 datetime — start of the window.
+</ParamField>
+
+<ParamField query="hasta" type="string">
+  ISO 8601 datetime — end of the window.
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X GET "https://api.rappi2.com/reportes/incidencias?desde=2026-05-01T00:00:00Z" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "desde": "2026-05-01T00:00:00Z",
+  "hasta": null,
+  "total": 28,
+  "por_severidad": {"1": 8, "2": 10, "3": 6, "4": 3, "5": 1},
+  "por_tipo": [
+    {"tipo": "paquete_dañado", "count": 12},
+    {"tipo": "demora", "count": 9}
+  ]
+}
+```
+</ResponseExample>
+
+---
+
+## Delivery times
+
+`GET /reportes/tiempos-entrega`
+
+Statistical summary (average, min, max) of assignment durations for completed assignments.
+
+<ParamField query="desde" type="string">
+  ISO 8601 datetime — filter by `fecha_fin >= desde`.
+</ParamField>
+
+<ParamField query="hasta" type="string">
+  ISO 8601 datetime — filter by `fecha_fin <= hasta`.
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X GET "https://api.rappi2.com/reportes/tiempos-entrega" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "desde": null,
+  "hasta": null,
+  "asignaciones_finalizadas": 1750,
+  "tiempo_promedio_segundos": 2340.5,
+  "tiempo_minimo_segundos": 180.0,
+  "tiempo_maximo_segundos": 9600.0,
+  "tiempo_promedio_minutos": 39.01
+}
+```
+</ResponseExample>
+
+---
+
+## SLA compliance
+
+`GET /reportes/sla-entregas`
+
+Percentage of completed assignments delivered within a configurable SLA threshold, plus p50/p95 duration percentiles.
+
+<ParamField query="desde" type="string">
+  ISO 8601 datetime — start of the window.
+</ParamField>
+
+<ParamField query="hasta" type="string">
+  ISO 8601 datetime — end of the window.
+</ParamField>
+
+<ParamField query="sla_minutos" type="integer" default="60">
+  SLA target in minutes (`1`–`1440`). Assignments completed within this threshold count as on-time.
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X GET "https://api.rappi2.com/reportes/sla-entregas?sla_minutos=45" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "desde": null,
+  "hasta": null,
+  "sla_minutos": 45,
+  "total_entregas": 1750,
+  "on_time": 1435,
+  "off_time": 315,
+  "on_time_pct": 82.0,
+  "p50_minutos": 31.5,
+  "p95_minutos": 67.2
+}
+```
+</ResponseExample>
+
+<ResponseField name="on_time_pct" type="number">
+  Percentage of deliveries completed within `sla_minutos`. `null` when there are no deliveries.
+</ResponseField>
+
+<ResponseField name="p50_minutos" type="number">
+  Median delivery duration in minutes. `null` when there are no deliveries.
+</ResponseField>
+
+<ResponseField name="p95_minutos" type="number">
+  95th-percentile delivery duration in minutes. `null` when there are no deliveries.
+</ResponseField>
+
+---
+
+## Operational report
+
+`GET /reportes/operativo`
+
+Real-time cross-source snapshot combining PostgreSQL (active assignments, driver availability) and MongoDB (online drivers, GPS coverage, geofences, recent incidents).
+
+<ParamField query="ventana_minutos" type="integer" default="5">
+  Time window in minutes for considering a driver "online" based on recent pings (`1`–`60`).
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X GET "https://api.rappi2.com/reportes/operativo?ventana_minutos=10" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "ventana_minutos": 10,
+  "asignaciones_en_curso": 12,
+  "conductores_ocupados_postgres": 12,
+  "conductores_online_mongo": 10,
+  "asignaciones_activas_sin_tracking": 2,
+  "asignaciones_con_ping_hoy": 34,
+  "geocercas_activas": 18,
+  "incidencias_ultimas_24h": 5
+}
+```
+</ResponseExample>
+
+<ResponseField name="conductores_online_mongo" type="integer" required>
+  Distinct driver IDs with a ping within the `ventana_minutos` window.
+</ResponseField>
+
+<ResponseField name="asignaciones_activas_sin_tracking" type="integer" required>
+  Active assignments (`EnCurso`) with no GPS ping in the current window.
+</ResponseField>
+
+<ResponseField name="asignaciones_con_ping_hoy" type="integer" required>
+  Distinct assignments that have received at least one ping today (since midnight UTC).
+</ResponseField>
+
+---
+
+## Evidence report
+
+`GET /reportes/evidencias`
+
+MongoDB-sourced KPIs for evidence documents: count by type, total files in GridFS, and storage size.
+
+<RequestExample>
+```bash cURL
+curl -X GET "https://api.rappi2.com/reportes/evidencias" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "total_evidencias": 340,
+  "por_tipo": {
+    "foto": 280,
+    "video": 40,
+    "audio": 10,
+    "documento": 10
+  },
+  "archivos_en_gridfs": 412,
+  "bytes_totales": 524288000,
+  "megabytes_totales": 500.0,
+  "top_incidencias_con_evidencias": [
+    {"incidencia_id": 15, "evidencias": 8},
+    {"incidencia_id": 7, "evidencias": 6}
+  ]
+}
+```
+</ResponseExample>
+
+---
+
+## Notifications report
+
+`GET /reportes/notificaciones`
+
+Summary of notifications created within a configurable time window, broken down by recipient type and read status.
+
+<ParamField query="horas" type="integer" default="24">
+  Time window in hours (`1`–`720`).
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X GET "https://api.rappi2.com/reportes/notificaciones?horas=48" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "ventana_horas": 48,
+  "desde": "2026-05-20T14:00:00Z",
+  "total": 185,
+  "leidas": 130,
+  "pendientes": 55,
+  "por_destinatario": [
+    {"tipo": "usuario", "total": 120, "leidas": 90, "pendientes": 30},
+    {"tipo": "cliente", "total": 65, "leidas": 40, "pendientes": 25}
+  ]
+}
+```
+</ResponseExample>
+
+---
+
+## Geographic distribution
+
+`GET /reportes/distribucion-geografica`
+
+Top districts by order volume (origin and destination) in a time window.
+
+<ParamField query="desde" type="string">
+  ISO 8601 datetime — start of the window.
+</ParamField>
+
+<ParamField query="hasta" type="string">
+  ISO 8601 datetime — end of the window.
+</ParamField>
+
+<ParamField query="top" type="integer" default="10">
+  Number of top districts to return per dimension (`1`–`100`).
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X GET "https://api.rappi2.com/reportes/distribucion-geografica?top=5" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "desde": null,
+  "hasta": null,
+  "top": 5,
+  "total_ordenes": 1820,
+  "top_origen": [
+    {"distrito": "Miraflores", "ordenes": 320},
+    {"distrito": "San Isidro", "ordenes": 280}
+  ],
+  "top_destino": [
+    {"distrito": "Surco", "ordenes": 410},
+    {"distrito": "La Molina", "ordenes": 195}
+  ]
+}
+```
+</ResponseExample>
+
+---
+
+## Client summary
+
+`GET /reportes/cliente/{cliente_id}/resumen`
+
+360-degree view of a single client: order counts by status, total revenue collected, and total invoiced.
+
+<ParamField path="cliente_id" type="integer" required>
+  Client ID.
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X GET "https://api.rappi2.com/reportes/cliente/7/resumen" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "cliente": {
+    "id": 7,
+    "nombre": "Logística Sur S.A.",
+    "email": "contacto@logisticasur.pe",
+    "activo": true
+  },
+  "total_ordenes": 142,
+  "ordenes_por_estado": {
+    "Entregado": 130,
+    "Cancelado": 8,
+    "En Proceso": 4
+  },
+  "total_recaudado": 28400.00,
+  "total_facturado": 29200.00
+}
+```
+</ResponseExample>
+
+---
+
+## Assignment complete report
+
+`GET /reportes/asignacion/{asignacion_id}/completo`
+
+Cross-source 360-degree view of a single assignment: assignment metadata from PostgreSQL, incident breakdown, GPS tracking statistics from MongoDB, evidence counts, and notification count for the driver.
+
+<ParamField path="asignacion_id" type="integer" required>
+  Assignment ID.
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X GET "https://api.rappi2.com/reportes/asignacion/101/completo" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "asignacion": {
+    "id": 101,
+    "estado": "Finalizada",
+    "conductor_id": 5,
+    "vehiculo_placa": "ABC-123",
+    "orden_id": 42,
+    "fecha_inicio": "2026-05-22T13:37:30Z",
+    "fecha_fin": "2026-05-22T14:00:00Z"
+  },
+  "incidencias": {
+    "total": 1,
+    "por_severidad": {"4": 1}
+  },
+  "tracking": {
+    "asignacion_id": 101,
+    "pings": 48,
+    "distancia_total_m": 9830.45,
+    "distancia_total_km": 9.830,
+    "duracion_segundos": 1350.0,
+    "duracion_minutos": 22.5,
+    "velocidad_promedio_kmh": 26.21,
+    "primer_ping": "2026-05-22T13:37:30Z",
+    "ultimo_ping": "2026-05-22T14:00:00Z"
+  },
+  "evidencias": {
+    "total": 2,
+    "por_tipo": {"foto": 2}
+  },
+  "notificaciones_al_conductor": 3
+}
+```
+</ResponseExample>

@@ -1,0 +1,328 @@
+---
+title: "Rappi2 data model: PostgreSQL and MongoDB"
+description: "Entity relationships across PostgreSQL tables (orders, users, fleet, billing) and MongoDB collections (GPS, geofences, audit, evidence, notifications)."
+---
+
+Rappi2 stores its data across two databases. PostgreSQL holds the normalized, relational core — users, orders, fleet, and billing — where referential integrity and transactions matter. MongoDB holds the high-volume, geospatial, and schema-flexible data — GPS pings, geofences, audit logs, evidence files, and notifications — where document structure and indexing flexibility are more important than strict consistency.
+
+## PostgreSQL tables
+
+### Identity and access
+
+**`roles`**
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | integer | Primary key |
+| `nombre` | varchar(50) | Unique role name |
+
+**`permisos`**
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | integer | Primary key |
+| `rol_id` | integer | FK → `roles.id` (CASCADE delete) |
+| `recurso` | varchar(50) | Resource name or `*` wildcard |
+| `accion` | varchar(20) | `read`, `write`, `delete`, or `*` wildcard |
+
+Unique constraint on `(rol_id, recurso, accion)`.
+
+**`usuarios`**
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | integer | Primary key |
+| `username` | varchar(50) | Unique, indexed |
+| `email` | varchar(150) | Unique, indexed |
+| `password_hash` | text | Bcrypt hash |
+| `rol_id` | integer | FK → `roles.id` (RESTRICT delete) |
+| `cliente_id` | integer | FK → `clientes.id` (SET NULL), unique |
+| `activo` | boolean | Soft-disable flag |
+| `fecha_registro` | timestamptz | Server default `now()` |
+
+**`tokens`**
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | integer | Primary key |
+| `usuario_id` | integer | FK → `usuarios.id` (CASCADE delete) |
+| `token` | text | Unique JWT string |
+| `fecha_expiracion` | timestamptz | |
+| `revocado` | boolean | Manual revocation flag |
+
+---
+
+### Customers
+
+**`clientes`**
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | integer | Primary key |
+| `nombre` | varchar(100) | |
+| `email` | varchar(150) | Unique, indexed |
+| `telefono` | varchar(20) | Optional |
+| `cc_id` | varchar(30) | National ID, optional |
+| `activo` | boolean | |
+| `fecha_registro` | timestamptz | Server default `now()` |
+
+**`clientes_direcciones`**
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | integer | Primary key |
+| `cliente_id` | integer | FK → `clientes.id` (CASCADE delete) |
+| `direccion` | varchar(200) | Street address |
+| `distrito` | varchar(80) | Optional |
+| `ciudad` | varchar(80) | Optional |
+| `estado` | varchar(80) | State/region, optional |
+| `pais` | varchar(80) | Optional |
+| `es_principal` | boolean | Marks the preferred address |
+
+---
+
+### Orders and billing
+
+**`ordenes`**
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | integer | Primary key |
+| `cliente_id` | integer | FK → `clientes.id` (CASCADE delete) |
+| `estado` | varchar(20) | `Pendiente`, `En Proceso`, `En Tránsito`, `Entregado`, `Cancelado` |
+| `direccion_origen` | varchar(200) | |
+| `distrito_origen` | varchar(80) | Optional |
+| `direccion_destino` | varchar(200) | |
+| `distrito_destino` | varchar(80) | Optional |
+| `fecha_creacion` | timestamptz | Server default `now()` |
+| `total` | numeric(10,2) | Optional until confirmed |
+
+**`pagos`**
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | integer | Primary key |
+| `orden_id` | integer | FK → `ordenes.id` (CASCADE delete) |
+| `fecha_pago` | timestamptz | Server default `now()` |
+| `monto` | numeric(10,2) | |
+| `estado` | varchar(20) | e.g. `Pendiente`, `Completado` |
+| `referencia_banco` | varchar(80) | Optional external reference |
+
+**`facturas`**
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | integer | Primary key |
+| `orden_id` | integer | FK → `ordenes.id` (CASCADE delete) |
+| `fecha` | timestamptz | Server default `now()` |
+| `ruc` | varchar(20) | Tax ID, optional |
+| `monto` | numeric(10,2) | |
+| `url` | text | PDF or external invoice URL |
+
+---
+
+### Fleet and dispatch
+
+**`vehiculos`**
+
+| Column | Type | Notes |
+|---|---|---|
+| `placa` | varchar(15) | **Primary key** — license plate |
+| `tipo` | varchar(40) | Vehicle category |
+| `capacidad_kg` | numeric(8,2) | Payload capacity |
+| `estado` | varchar(20) | `Operativo`, etc. |
+| `fecha_mantenimiento` | timestamptz | Last or next maintenance date |
+| `activo` | boolean | |
+
+**`conductores`**
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | integer | Primary key |
+| `usuario_id` | integer | FK → `usuarios.id` (CASCADE delete), unique |
+| `vehiculo_placa` | varchar(15) | FK → `vehiculos.placa` (SET NULL) |
+| `nombre` | varchar(100) | |
+| `licencia` | varchar(30) | Unique driver's licence number |
+| `disponibilidad` | varchar(20) | `Disponible`, etc. |
+| `activo` | boolean | |
+
+**`asignaciones`**
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | integer | Primary key |
+| `orden_id` | integer | FK → `ordenes.id` (CASCADE delete) |
+| `conductor_id` | integer | FK → `conductores.id` (RESTRICT delete) |
+| `vehiculo_placa` | varchar(15) | FK → `vehiculos.placa` (RESTRICT delete) |
+| `estado` | varchar(20) | `Asignada`, etc. |
+| `fecha_inicio` | timestamptz | Optional |
+| `fecha_fin` | timestamptz | Optional |
+
+---
+
+### Routes and incidents
+
+**`rutas_planificadas`**
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | integer | Primary key |
+| `orden_id` | integer | FK → `ordenes.id` (CASCADE delete) |
+| `distancia_km` | numeric(8,2) | Optional computed distance |
+| `tiempo_estimado` | interval | PostgreSQL `INTERVAL` type |
+
+**`paradas`**
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | integer | Primary key |
+| `ruta_id` | integer | FK → `rutas_planificadas.id` (CASCADE delete) |
+| `orden_id` | integer | FK → `ordenes.id` (SET NULL) |
+| `direccion` | varchar(200) | |
+| `distrito` | varchar(80) | Optional |
+| `secuencia` | integer | Stop order within the route |
+| `fecha_paso` | timestamptz | Actual arrival time, optional |
+| `estado` | varchar(20) | `Pendiente`, etc. |
+
+Unique constraint on `(ruta_id, secuencia)`.
+
+**`incidencias`**
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | integer | Primary key |
+| `asignacion_id` | integer | FK → `asignaciones.id` (CASCADE delete) |
+| `tipo` | varchar(50) | Incident category |
+| `fecha` | timestamptz | Server default `now()` |
+| `severidad` | integer | 1–5 (check constraint) |
+| `notas` | text | Optional free-text notes |
+| `evidencia_url` | text | Optional link to evidence |
+
+---
+
+## MongoDB collections
+
+### `gps_tracking`
+
+One document per GPS ping from a driver device.
+
+```json
+{
+  "_id": "ObjectId",
+  "asignacion_id": 42,
+  "conductor_id": 7,
+  "vehiculo_placa": "ABC-123",
+  "location": { "type": "Point", "coordinates": [-77.0428, -12.0464] },
+  "speed_kmh": 38.5,
+  "heading": 270,
+  "accuracy_m": 4.2,
+  "timestamp": "2026-05-22T14:30:00Z"
+}
+```
+
+<Note>
+A `2dsphere` index on `location` enables `$geoNear` aggregation and proximity queries (for example, finding all drivers within 2 km of a point). A compound index on `(asignacion_id, timestamp DESC)` accelerates time-range queries per assignment.
+</Note>
+
+### `geocercas`
+
+Polygon geofences linked to planned routes.
+
+```json
+{
+  "_id": "ObjectId",
+  "ruta_id": 15,
+  "orden_id": 88,
+  "tipo": "ruta_buffer",
+  "geometry": { "type": "Polygon", "coordinates": [[[...]]] },
+  "tolerance_m": 100,
+  "activa": true,
+  "created_at": "2026-05-22T10:00:00Z"
+}
+```
+
+<Note>
+A `2dsphere` index on `geometry` powers `$geoIntersects` queries, allowing the API to check in real time whether a driver's current position falls inside an active geofence.
+</Note>
+
+### `auditoria`
+
+One document per HTTP request, written by `AuditMiddleware`.
+
+```json
+{
+  "_id": "ObjectId",
+  "usuario_id": 3,
+  "ruta": "/api/ordenes/12",
+  "metodo": "PUT",
+  "ip": "203.0.113.45",
+  "status_code": 200,
+  "payload_hash": "e3b0c44298fc1c14...",
+  "timestamp": "2026-05-22T14:31:05Z"
+}
+```
+
+<Note>
+A TTL index on `timestamp` with `expireAfterSeconds: 7776000` (90 days) automatically purges old audit records without manual cleanup jobs.
+</Note>
+
+### `evidencias`
+
+Metadata document per evidence submission; binary files live in GridFS bucket `evidencias_files`.
+
+```json
+{
+  "_id": "ObjectId",
+  "incidencia_id": 5,
+  "tipo": "foto",
+  "descripcion": "Daño en paquete",
+  "uploaded_by": 7,
+  "archivos": [
+    {
+      "file_id": "6650f1a2...",
+      "filename": "foto_dano.jpg",
+      "content_type": "image/jpeg",
+      "size": 204800
+    }
+  ],
+  "urls": [],
+  "timestamp": "2026-05-22T15:00:00Z"
+}
+```
+
+### `notificaciones`
+
+Per-recipient notification documents.
+
+```json
+{
+  "_id": "ObjectId",
+  "destinatario_tipo": "conductor",
+  "destinatario_id": 7,
+  "leida": false,
+  "fecha": "2026-05-22T14:45:00Z"
+}
+```
+
+A compound index on `(destinatario_tipo, destinatario_id, fecha DESC)` serves inbox queries efficiently.
+
+---
+
+## Key relationships
+
+```
+Cliente ──< Orden ──< Pago
+                 ──< Factura
+                 ──< Asignacion ──> Conductor ──> Usuario
+                              ──> Vehiculo
+                              ──< Incidencia ──< Evidencia (MongoDB)
+                 ──< RutaPlanificada ──< Parada
+                              ──< Geocerca (MongoDB)
+
+Asignacion ──< GPS Ping (MongoDB, via asignacion_id)
+```
+
+- An **order** can have multiple payments, invoices, assignments, and planned routes.
+- An **assignment** links one order to one driver and one vehicle for a delivery leg, and accumulates incidents.
+- **GPS pings** in MongoDB reference `asignacion_id` and `conductor_id` for time-series and proximity queries.
+- **Evidence files** in MongoDB reference `incidencia_id` and store binary content in GridFS.

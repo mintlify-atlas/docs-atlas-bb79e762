@@ -1,0 +1,105 @@
+---
+title: "Authenticate with Rappi2"
+description: "Rappi2 uses JWT Bearer tokens. Access tokens expire in 15 minutes; refresh tokens last 7 days. Learn how to obtain, use, and rotate them."
+---
+
+Rappi2 uses JWT Bearer tokens for authentication. Every protected endpoint requires an `Authorization: Bearer <token>` header. Access tokens are short-lived (15 minutes by default) and must be refreshed using a longer-lived refresh token (7 days). Both lifetimes are configurable via the `ACCESS_TOKEN_EXPIRE_MINUTES` and `REFRESH_TOKEN_EXPIRE_DAYS` environment variables.
+
+## Getting a token
+
+Send your credentials to `POST /api/auth/login` to receive an access token and a refresh token.
+
+<Note>
+  The login endpoint uses **OAuth2 form encoding**, not a JSON body. Submit your credentials as `application/x-www-form-urlencoded` fields named `username` and `password`. Sending a JSON payload will result in a validation error.
+</Note>
+
+```bash
+curl -s -X POST http://localhost:8000/api/auth/login \
+  -F "username=admin" \
+  -F "password=admin123"
+```
+
+A successful login returns a `TokenPair`:
+
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refresh_token": "dGhpcyBpcyBhIHJhbmRvbSByZWZyZXNoIHRva2Vu...",
+  "token_type": "bearer",
+  "expires_in": 900
+}
+```
+
+`expires_in` is the access token lifetime in seconds (900 = 15 minutes). Store both tokens; you will need the refresh token to obtain a new access token without re-entering credentials.
+
+## Using the token
+
+Pass the access token in the `Authorization` header for every protected request:
+
+```bash
+curl -s http://localhost:8000/api/auth/me \
+  -H "Authorization: Bearer <your_access_token>"
+```
+
+The `/api/auth/me` endpoint returns the profile of the currently authenticated user, including their assigned role and permissions.
+
+## Refreshing tokens
+
+When an access token expires, exchange the refresh token for a new token pair. The old refresh token is revoked on use — store the new one returned in the response.
+
+```bash
+curl -s -X POST http://localhost:8000/api/auth/refresh \
+  -H "Content-Type: application/json" \
+  -d '{"refresh_token": "<your_refresh_token>"}'
+```
+
+The response has the same shape as the login response:
+
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refresh_token": "bmV3UmVmcmVzaFRva2VuSGVyZQ...",
+  "token_type": "bearer",
+  "expires_in": 900
+}
+```
+
+<Warning>
+  Each refresh token can only be used once. After a successful refresh, the previous refresh token is permanently revoked. Always update the stored refresh token with the one returned in the response.
+</Warning>
+
+## Logging out
+
+Revoke the refresh token to invalidate the session. Subsequent attempts to refresh using that token will be rejected.
+
+```bash
+curl -s -X POST http://localhost:8000/api/auth/logout \
+  -H "Content-Type: application/json" \
+  -d '{"refresh_token": "<your_refresh_token>"}'
+```
+
+A successful logout returns:
+
+```json
+{
+  "message": "Logout exitoso"
+}
+```
+
+Logging out does not immediately invalidate the short-lived access token — it will remain valid until it expires naturally (up to 15 minutes). For security-sensitive flows, treat logout as best-effort and minimize the access token lifetime.
+
+## Token expiry
+
+When an access token expires, any protected endpoint returns a `401 Unauthorized` response:
+
+```json
+{
+  "detail": "Could not validate credentials"
+}
+```
+
+When this happens, use the refresh token to obtain a new access token (see [Refreshing tokens](#refreshing-tokens) above). If the refresh token itself has expired or been revoked, the user must log in again via `POST /api/auth/login`.
+
+<Tip>
+  Build proactive refresh into your client: track the `expires_in` value returned at login and refresh the access token before it expires, rather than waiting for a `401` response.
+</Tip>

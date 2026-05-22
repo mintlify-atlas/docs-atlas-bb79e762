@@ -1,0 +1,255 @@
+---
+title: "GPS tracking and geofences with Rappi2"
+description: "Record GPS pings from drivers in real time, query tracking history, find nearby drivers by radius, and manage geofence containment checks."
+---
+
+Rappi2 stores all GPS data in MongoDB, giving you millisecond-resolution location history per assignment, geospatial proximity queries over the active fleet, and polygon-based geofences for route compliance. All tracking endpoints live under `/api/tracking` and `/api/geocercas`.
+
+---
+
+## Recording GPS pings
+
+Send a ping every time a driver's device reports its location. Each ping is stored as a GeoJSON `Point` in the `gps_tracking` collection and indexed with a `2dsphere` index for geospatial queries.
+
+**Required permission:** `tracking:write`
+
+```bash
+curl -X POST https://api.rappi2.example/api/tracking/ping \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "asignacion_id": 55,
+    "conductor_id": 7,
+    "vehiculo_placa": "ABC-123",
+    "lon": -77.0282,
+    "lat": -12.1191,
+    "speed_kmh": 38.5,
+    "heading": 270.0,
+    "accuracy_m": 4.2,
+    "timestamp": "2025-06-01T10:22:00Z"
+  }'
+```
+
+**Response `201 Created`:**
+
+```json
+{
+  "id": "6659f3a2c1e4b200012f9a01",
+  "asignacion_id": 55,
+  "conductor_id": 7,
+  "vehiculo_placa": "ABC-123",
+  "location": {
+    "type": "Point",
+    "coordinates": [-77.0282, -12.1191]
+  },
+  "speed_kmh": 38.5,
+  "heading": 270.0,
+  "accuracy_m": 4.2,
+  "timestamp": "2025-06-01T10:22:00Z"
+}
+```
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `asignacion_id` | integer | Yes | Links the ping to an active assignment |
+| `conductor_id` | integer | Yes | Identifies the driver |
+| `vehiculo_placa` | string | Yes | Vehicle plate |
+| `lon` | float | Yes | Longitude, `[-180, 180]` |
+| `lat` | float | Yes | Latitude, `[-90, 90]` |
+| `speed_kmh` | float | No | Speed in km/h |
+| `heading` | float | No | Bearing in degrees, `[0, 360]` |
+| `accuracy_m` | float | No | GPS accuracy radius in metres |
+| `timestamp` | datetime | No | Defaults to server UTC time if omitted |
+
+<Note>
+  The `gps_tracking` collection carries a `2dsphere` index on the `location` field, which powers all geospatial queries — proximity searches and `$geoIntersects` containment checks. Ping throughput is only limited by MongoDB write capacity; the index is created automatically on startup.
+</Note>
+
+---
+
+## Querying tracking history
+
+Retrieve all pings for a given assignment, optionally filtered to a time window. Results are returned newest-first, capped at `limit` documents.
+
+**Required permission:** `tracking:read`
+
+```bash
+curl "https://api.rappi2.example/api/tracking/asignacion/55\
+?desde=2025-06-01T10:00:00Z\
+&hasta=2025-06-01T11:00:00Z\
+&limit=100" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+| Parameter | Type | Default | Max | Notes |
+|---|---|---|---|---|
+| `asignacion_id` | integer | — | — | Path parameter |
+| `desde` | datetime | none | — | ISO 8601, filters `timestamp >= desde` |
+| `hasta` | datetime | none | — | ISO 8601, filters `timestamp <= hasta` |
+| `limit` | integer | `500` | `2000` | Maximum pings returned |
+
+To fetch only the most recent ping for a quick location check:
+
+```bash
+curl "https://api.rappi2.example/api/tracking/asignacion/55/ultimo" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+## Finding nearby drivers
+
+Search for drivers who have sent a ping within a configurable radius **and** time window. This is useful for dispatch UIs and auto-assignment workflows.
+
+**Required permission:** `tracking:read`
+
+```bash
+curl "https://api.rappi2.example/api/tracking/conductores-cerca\
+?lon=-77.0282\
+&lat=-12.1191\
+&radio_m=3000\
+&ventana_min=5" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Response `200 OK`:**
+
+```json
+[
+  {
+    "conductor_id": 7,
+    "asignacion_id": 55,
+    "vehiculo_placa": "ABC-123",
+    "location": {
+      "type": "Point",
+      "coordinates": [-77.0312, -12.1204]
+    },
+    "speed_kmh": 12.0,
+    "timestamp": "2025-06-01T10:21:55Z",
+    "distance_m": 347.2,
+    "ultimo_ping_id": "6659f3a2c1e4b200012f9a01"
+  }
+]
+```
+
+| Parameter | Type | Default | Range | Notes |
+|---|---|---|---|---|
+| `lon` | float | — | `[-180, 180]` | Center longitude |
+| `lat` | float | — | `[-90, 90]` | Center latitude |
+| `radio_m` | integer | `2000` | `10 – 50000` | Search radius in metres |
+| `ventana_min` | integer | `5` | `1 – 60` | Only consider pings newer than this many minutes |
+
+<Tip>
+  Keep `ventana_min` small (3–5 minutes) to avoid including drivers whose device went offline. A driver whose last ping is 20 minutes old is likely not reachable even if they are inside the radius.
+</Tip>
+
+---
+
+## Trip statistics
+
+Get aggregated metrics for a completed or in-progress assignment: total distance, elapsed time, and average speed computed from the stored pings.
+
+**Required permission:** `tracking:read`
+
+```bash
+curl "https://api.rappi2.example/api/tracking/asignacion/55/estadisticas" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Response `200 OK`:**
+
+```json
+{
+  "asignacion_id": 55,
+  "pings": 142,
+  "distancia_total_m": 8412.37,
+  "distancia_total_km": 8.412,
+  "duracion_segundos": 2820.0,
+  "duracion_minutos": 47.0,
+  "velocidad_promedio_kmh": 10.73,
+  "primer_ping": "2025-06-01T10:15:02Z",
+  "ultimo_ping": "2025-06-01T11:02:02Z"
+}
+```
+
+Distance is calculated with the haversine formula across consecutive pings. If no pings exist for the assignment, all numeric fields return `0` or `null`.
+
+---
+
+## Creating geofences
+
+Geofences are GeoJSON Polygon documents stored in the `geocercas` collection. They can be associated with a route or an order and used to check whether a driver is within a defined zone.
+
+**Required permission:** `geocercas:write`
+
+```bash
+curl -X POST https://api.rappi2.example/api/geocercas \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ruta_id": 12,
+    "orden_id": 1001,
+    "tipo": "zona_entrega",
+    "coordinates": [
+      [
+        [-77.0310, -12.1180],
+        [-77.0290, -12.1180],
+        [-77.0290, -12.1200],
+        [-77.0310, -12.1200],
+        [-77.0310, -12.1180]
+      ]
+    ],
+    "tolerance_m": 50,
+    "activa": true
+  }'
+```
+
+**Response `201 Created`:**
+
+```json
+{
+  "id": "6659f4b3c1e4b200012f9b02",
+  "ruta_id": 12,
+  "orden_id": 1001,
+  "tipo": "zona_entrega",
+  "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+      [
+        [-77.0310, -12.1180],
+        [-77.0290, -12.1180],
+        [-77.0290, -12.1200],
+        [-77.0310, -12.1200],
+        [-77.0310, -12.1180]
+      ]
+    ]
+  },
+  "tolerance_m": 50,
+  "activa": true,
+  "created_at": "2025-06-01T10:00:00Z"
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `tipo` | string | `ruta_buffer` \| `zona_entrega` \| `prohibida` |
+| `coordinates` | array | GeoJSON Polygon ring: `[[[lon, lat], ...]]`. First and last point must be identical. |
+| `tolerance_m` | integer | Informational buffer, not enforced server-side |
+| `activa` | boolean | Only active geofences participate in containment queries |
+
+---
+
+## Checking geofence containment
+
+Query which active geofences contain a given coordinate. The server uses `$geoIntersects` against the `geometry` field.
+
+**Required permission:** `geocercas:read`
+
+```bash
+curl "https://api.rappi2.example/api/geocercas/contiene\
+?lon=-77.0300\
+&lat=-12.1190" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Returns an array of all active `GeocercaOut` documents whose polygon contains the point. An empty array means the coordinate is outside all registered geofences.

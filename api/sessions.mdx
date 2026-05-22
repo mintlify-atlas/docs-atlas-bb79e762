@@ -1,0 +1,209 @@
+---
+title: "Sessions API — view and revoke active sessions"
+description: "List and revoke JWT refresh token sessions scoped to a user. Own sessions need no extra permission; other users' sessions require sesiones:read or sesiones:delete."
+---
+
+The Sessions API exposes refresh-token sessions as a sub-resource of users. A session corresponds to a single refresh token row in the `tokens` table. Users can always list and revoke their own sessions without any special permission. Accessing or revoking another user's sessions requires the `sesiones:read` or `sesiones:delete` permission respectively.
+
+---
+
+## GET /api/usuarios/me/sesiones
+
+List the sessions belonging to the currently authenticated user.
+
+**Authentication:** `Bearer` token required.  
+**Permission required:** none (own sessions only).
+
+### Query parameters
+
+<ParamField query="activos_solo" type="boolean" default="true">
+  When `true`, only non-revoked sessions that have not yet expired are returned. Set to `false` to include all historical sessions.
+</ParamField>
+
+### Response — 200 OK
+
+Returns an array of `TokenInfo` objects ordered by `fecha_expiracion` descending.
+
+<ResponseField name="id" type="number" required>
+  Session (token row) ID.
+</ResponseField>
+
+<ResponseField name="usuario_id" type="number" required>
+  ID of the user who owns this session.
+</ResponseField>
+
+<ResponseField name="fecha_expiracion" type="string" required>
+  ISO 8601 timestamp when the refresh token expires.
+</ResponseField>
+
+<ResponseField name="revocado" type="boolean" required>
+  Whether the session has been explicitly revoked.
+</ResponseField>
+
+<RequestExample>
+```bash cURL
+curl --request GET \
+  --url 'https://api.example.com/api/usuarios/me/sesiones?activos_solo=true' \
+  --header 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+[
+  {
+    "id": 101,
+    "usuario_id": 42,
+    "fecha_expiracion": "2026-06-21T10:00:00Z",
+    "revocado": false
+  }
+]
+```
+</ResponseExample>
+
+---
+
+## GET /api/usuarios/{usuario_id}/sesiones
+
+List sessions for a specific user. The authenticated user may query their own sessions without extra permissions. Querying another user's sessions requires `sesiones:read`.
+
+**Authentication:** `Bearer` token required.  
+**Permission required:** none for own sessions; `sesiones:read` for other users.
+
+### Path parameters
+
+<ParamField path="usuario_id" type="number" required>
+  ID of the user whose sessions to list.
+</ParamField>
+
+### Query parameters
+
+<ParamField query="activos_solo" type="boolean" default="true">
+  Return only active (non-revoked, non-expired) sessions when `true`.
+</ParamField>
+
+<ParamField query="skip" type="number" default="0">
+  Number of records to skip for pagination.
+</ParamField>
+
+<ParamField query="limit" type="number" default="50" placeholder="1-200">
+  Maximum number of records to return. Cannot exceed 200.
+</ParamField>
+
+### Response — 200 OK
+
+Returns an array of `TokenInfo` objects. See [GET /api/usuarios/me/sesiones](#response--200-ok) for the field list.
+
+<RequestExample>
+```bash cURL
+curl --request GET \
+  --url 'https://api.example.com/api/usuarios/42/sesiones?activos_solo=false&skip=0&limit=10' \
+  --header 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+[
+  {
+    "id": 101,
+    "usuario_id": 42,
+    "fecha_expiracion": "2026-06-21T10:00:00Z",
+    "revocado": false
+  },
+  {
+    "id": 98,
+    "usuario_id": 42,
+    "fecha_expiracion": "2026-05-20T08:30:00Z",
+    "revocado": true
+  }
+]
+```
+
+```json 404
+{ "detail": "Usuario no encontrado" }
+```
+</ResponseExample>
+
+---
+
+## DELETE /api/usuarios/{usuario_id}/sesiones/{sesion_id}
+
+Revoke a single session by ID. The owner of the session can always revoke it. Revoking another user's session requires `sesiones:delete`.
+
+**Authentication:** `Bearer` token required.  
+**Permission required:** none for own sessions; `sesiones:delete` for other users.
+
+### Path parameters
+
+<ParamField path="usuario_id" type="number" required>
+  ID of the user who owns the session.
+</ParamField>
+
+<ParamField path="sesion_id" type="number" required>
+  ID of the session to revoke.
+</ParamField>
+
+### Response — 204 No Content
+
+No response body is returned. If the session is already revoked the request is idempotent and still returns 204.
+
+<RequestExample>
+```bash cURL
+curl --request DELETE \
+  --url https://api.example.com/api/usuarios/42/sesiones/101 \
+  --header 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 404
+{ "detail": "Sesion no encontrada" }
+```
+</ResponseExample>
+
+---
+
+## DELETE /api/usuarios/{usuario_id}/sesiones
+
+Revoke all active sessions for a user at once — a force-logout. The owner can revoke their own sessions. Revoking another user's sessions requires `sesiones:delete`.
+
+**Authentication:** `Bearer` token required.  
+**Permission required:** none for own sessions; `sesiones:delete` for other users.
+
+### Path parameters
+
+<ParamField path="usuario_id" type="number" required>
+  ID of the user whose sessions to revoke.
+</ParamField>
+
+### Response — 200 OK
+
+<ResponseField name="revocados" type="number" required>
+  Number of sessions that were revoked by this request.
+</ResponseField>
+
+<ResponseField name="usuario_id" type="number" required>
+  ID of the user whose sessions were revoked.
+</ResponseField>
+
+<RequestExample>
+```bash cURL
+curl --request DELETE \
+  --url https://api.example.com/api/usuarios/42/sesiones \
+  --header 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "revocados": 3,
+  "usuario_id": 42
+}
+```
+
+```json 404
+{ "detail": "Usuario no encontrado" }
+```
+</ResponseExample>

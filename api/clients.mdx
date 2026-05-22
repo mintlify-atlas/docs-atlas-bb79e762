@@ -1,0 +1,387 @@
+---
+title: "Clients API — manage customers and addresses"
+description: "CRUD operations for client records and their delivery addresses, including principal-address management and soft-delete deactivation."
+---
+
+The Clients API lets you create and manage customer accounts and their associated delivery addresses. All write operations require the `clientes:write` permission; reads require `clientes:read`. Deleting a client performs a soft delete (sets `activo = false`) rather than removing the record.
+
+---
+
+## List clients
+
+<ParamField path="GET /api/clientes" type="string" />
+
+Returns a paginated list of clients, optionally filtered by active status. Eagerly loads the `direcciones` array on each client.
+
+**Required permission:** `clientes:read`
+
+### Query parameters
+
+<ParamField query="skip" type="integer" default="0">
+  Number of records to skip for pagination.
+</ParamField>
+
+<ParamField query="limit" type="integer" default="50">
+  Maximum number of records to return. Hard cap: 200.
+</ParamField>
+
+<ParamField query="activo" type="boolean" default="true">
+  Filter by active status. Pass `false` to list deactivated clients. Omit to use the default (`true`).
+</ParamField>
+
+### Response `200`
+
+Array of client objects.
+
+<ResponseField name="id" type="integer" required>
+  Unique client identifier.
+</ResponseField>
+
+<ResponseField name="nombre" type="string" required>
+  Full name of the client.
+</ResponseField>
+
+<ResponseField name="email" type="string" required>
+  Email address. Must be unique across all clients.
+</ResponseField>
+
+<ResponseField name="telefono" type="string">
+  Contact phone number.
+</ResponseField>
+
+<ResponseField name="cc_id" type="string">
+  National ID / document number.
+</ResponseField>
+
+<ResponseField name="activo" type="boolean" required>
+  Whether the client account is active.
+</ResponseField>
+
+<ResponseField name="fecha_registro" type="string (datetime)">
+  ISO 8601 timestamp of account creation.
+</ResponseField>
+
+<ResponseField name="direcciones" type="object[]">
+  List of delivery addresses associated with this client.
+  <Expandable title="address fields">
+    <ResponseField name="id" type="integer" required>Unique address identifier.</ResponseField>
+    <ResponseField name="cliente_id" type="integer" required>Parent client ID.</ResponseField>
+    <ResponseField name="direccion" type="string" required>Street address.</ResponseField>
+    <ResponseField name="distrito" type="string">District or neighbourhood.</ResponseField>
+    <ResponseField name="ciudad" type="string">City.</ResponseField>
+    <ResponseField name="estado" type="string">State or region.</ResponseField>
+    <ResponseField name="pais" type="string">Country.</ResponseField>
+    <ResponseField name="es_principal" type="boolean">Whether this is the primary address.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+```bash
+curl https://api.rappi2.com/api/clientes?activo=true&limit=20 \
+  -H "Authorization: Bearer <token>"
+```
+
+---
+
+## Create a client
+
+<ParamField path="POST /api/clientes" type="string" />
+
+Creates a new client account. Returns `400` if the email is already registered.
+
+**Required permission:** `clientes:write`
+
+### Request body
+
+<ParamField body="nombre" type="string" required>
+  Full name of the client.
+</ParamField>
+
+<ParamField body="email" type="string" required>
+  Valid email address. Must be unique.
+</ParamField>
+
+<ParamField body="telefono" type="string">
+  Contact phone number.
+</ParamField>
+
+<ParamField body="cc_id" type="string">
+  National ID / document number.
+</ParamField>
+
+### Response `201`
+
+The newly created client object (same shape as the list response).
+
+```bash
+curl -X POST https://api.rappi2.com/api/clientes \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"nombre": "Ana Torres", "email": "ana@example.com", "telefono": "999000111"}'
+```
+
+---
+
+## Get a client
+
+<ParamField path="GET /api/clientes/{cliente_id}" type="string" />
+
+Returns a single client including their addresses. Returns `404` if not found.
+
+**Required permission:** `clientes:read`
+
+### Path parameters
+
+<ParamField path="cliente_id" type="integer" required>
+  Client ID.
+</ParamField>
+
+### Response `200`
+
+Client object (same shape as list items).
+
+```bash
+curl https://api.rappi2.com/api/clientes/42 \
+  -H "Authorization: Bearer <token>"
+```
+
+---
+
+## Update a client
+
+<ParamField path="PATCH /api/clientes/{cliente_id}" type="string" />
+
+Partially updates a client record. Only fields provided in the request body are changed.
+
+**Required permission:** `clientes:write`
+
+### Path parameters
+
+<ParamField path="cliente_id" type="integer" required>
+  Client ID.
+</ParamField>
+
+### Request body
+
+All fields are optional.
+
+<ParamField body="nombre" type="string">
+  New full name.
+</ParamField>
+
+<ParamField body="email" type="string">
+  New email address. Must be unique.
+</ParamField>
+
+<ParamField body="telefono" type="string">
+  New phone number.
+</ParamField>
+
+<ParamField body="cc_id" type="string">
+  New national ID.
+</ParamField>
+
+<ParamField body="activo" type="boolean">
+  Manually set the active flag.
+</ParamField>
+
+### Response `200`
+
+Updated client object.
+
+```bash
+curl -X PATCH https://api.rappi2.com/api/clientes/42 \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"telefono": "999000222"}'
+```
+
+---
+
+## Deactivate a client
+
+<ParamField path="DELETE /api/clientes/{cliente_id}" type="string" />
+
+Soft-deletes the client by setting `activo = false`. The record is retained in the database.
+
+**Required permission:** `clientes:delete`
+
+### Path parameters
+
+<ParamField path="cliente_id" type="integer" required>
+  Client ID.
+</ParamField>
+
+### Response `204`
+
+No body.
+
+```bash
+curl -X DELETE https://api.rappi2.com/api/clientes/42 \
+  -H "Authorization: Bearer <token>"
+```
+
+---
+
+## Add an address
+
+<ParamField path="POST /api/clientes/{cliente_id}/direcciones" type="string" />
+
+Adds a delivery address to a client. If `es_principal` is `true`, any previously marked principal address is automatically demoted.
+
+**Required permission:** `clientes:write`
+
+### Path parameters
+
+<ParamField path="cliente_id" type="integer" required>
+  Client ID.
+</ParamField>
+
+### Request body
+
+<ParamField body="direccion" type="string" required>
+  Street address.
+</ParamField>
+
+<ParamField body="distrito" type="string">
+  District or neighbourhood.
+</ParamField>
+
+<ParamField body="ciudad" type="string">
+  City.
+</ParamField>
+
+<ParamField body="estado" type="string">
+  State or region.
+</ParamField>
+
+<ParamField body="pais" type="string">
+  Country.
+</ParamField>
+
+<ParamField body="es_principal" type="boolean" default="false">
+  Mark this address as the client's primary delivery address.
+</ParamField>
+
+### Response `201`
+
+The created address object.
+
+```bash
+curl -X POST https://api.rappi2.com/api/clientes/42/direcciones \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"direccion": "Av. Larco 1234", "distrito": "Miraflores", "ciudad": "Lima", "es_principal": true}'
+```
+
+---
+
+## List addresses
+
+<ParamField path="GET /api/clientes/{cliente_id}/direcciones" type="string" />
+
+Returns all delivery addresses for a client.
+
+**Required permission:** `clientes:read`
+
+### Path parameters
+
+<ParamField path="cliente_id" type="integer" required>
+  Client ID.
+</ParamField>
+
+### Response `200`
+
+Array of address objects.
+
+```bash
+curl https://api.rappi2.com/api/clientes/42/direcciones \
+  -H "Authorization: Bearer <token>"
+```
+
+---
+
+## Update an address
+
+<ParamField path="PATCH /api/clientes/{cliente_id}/direcciones/{direccion_id}" type="string" />
+
+Partially updates a delivery address. Setting `es_principal: true` demotes any other principal address for this client.
+
+**Required permission:** `clientes:write`
+
+### Path parameters
+
+<ParamField path="cliente_id" type="integer" required>
+  Client ID.
+</ParamField>
+
+<ParamField path="direccion_id" type="integer" required>
+  Address ID.
+</ParamField>
+
+### Request body
+
+All fields are optional.
+
+<ParamField body="direccion" type="string">
+  New street address.
+</ParamField>
+
+<ParamField body="distrito" type="string">
+  New district.
+</ParamField>
+
+<ParamField body="ciudad" type="string">
+  New city.
+</ParamField>
+
+<ParamField body="estado" type="string">
+  New state or region.
+</ParamField>
+
+<ParamField body="pais" type="string">
+  New country.
+</ParamField>
+
+<ParamField body="es_principal" type="boolean">
+  Promote this address to principal.
+</ParamField>
+
+### Response `200`
+
+Updated address object.
+
+```bash
+curl -X PATCH https://api.rappi2.com/api/clientes/42/direcciones/7 \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"es_principal": true}'
+```
+
+---
+
+## Delete an address
+
+<ParamField path="DELETE /api/clientes/{cliente_id}/direcciones/{direccion_id}" type="string" />
+
+Permanently removes a delivery address.
+
+**Required permission:** `clientes:write`
+
+### Path parameters
+
+<ParamField path="cliente_id" type="integer" required>
+  Client ID.
+</ParamField>
+
+<ParamField path="direccion_id" type="integer" required>
+  Address ID.
+</ParamField>
+
+### Response `204`
+
+No body.
+
+```bash
+curl -X DELETE https://api.rappi2.com/api/clientes/42/direcciones/7 \
+  -H "Authorization: Bearer <token>"
+```

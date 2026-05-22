@@ -1,0 +1,113 @@
+---
+title: "Deploy Rappi2 with Docker Compose"
+description: "Spin up the full Rappi2 stack — FastAPI, PostgreSQL 15, and MongoDB 6.0 — with Docker Compose. Covers build, migrations, seeding, and day-to-day operations commands."
+---
+
+Docker Compose is the fastest way to run Rappi2. It starts three services together: `api` (the FastAPI application), `postgres` (PostgreSQL 15), and `mongodb` (MongoDB 6.0). All data is persisted in named volumes so it survives container restarts.
+
+## Prerequisites
+
+- [Docker](https://docs.docker.com/get-docker/) 24 or later
+- [Docker Compose](https://docs.docker.com/compose/install/) v2 (bundled with Docker Desktop)
+- Git
+
+## Setup
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/JorLOrT/rappi2.git
+    cd rappi2
+    ```
+  </Step>
+
+  <Step title="Configure environment variables">
+    Copy the example file and edit the values for your environment:
+
+    ```bash
+    cp .env.example .env
+    ```
+
+    At minimum, set the following variables before starting:
+
+    | Variable | What to change |
+    |---|---|
+    | `POSTGRES_USER` | PostgreSQL username (default: `postgres`) |
+    | `POSTGRES_PASSWORD` | PostgreSQL password (default: `postgres`) |
+    | `POSTGRES_DB` | Database name (default: `rappi2`) |
+    | `MONGO_USER` | MongoDB root username (default: `admin`) |
+    | `MONGO_PASSWORD` | MongoDB root password (default: `admin`) |
+    | `SECRET_KEY` | JWT signing secret — **must be changed for any non-development environment** |
+    | `ORS_API_KEY` | Your [OpenRouteService](https://openrouteservice.org/) API key for route planning |
+
+    The `DATABASE_URL` and `MONGO_URL` values in `.env` are used by Alembic and scripts running outside Docker. Inside the `api` container, Docker Compose injects these automatically using the service hostnames `postgres` and `mongodb`.
+  </Step>
+
+  <Step title="Build and start the stack">
+    ```bash
+    docker-compose up -d --build
+    ```
+
+    Docker Compose will build the `api` image, pull `postgres:15-alpine` and `mongo:6.0`, and wait for both databases to pass their health checks before starting the API.
+  </Step>
+
+  <Step title="Run database migrations">
+    Apply all Alembic migrations to create the PostgreSQL schema:
+
+    ```bash
+    docker-compose exec api alembic upgrade head
+    ```
+  </Step>
+
+  <Step title="Seed initial data">
+    Create the default roles, permissions, and admin user:
+
+    ```bash
+    docker-compose exec api python scripts/seed_admin.py
+    ```
+
+    This creates the `Admin`, `Despachador`, `Conductor`, and `Cliente` roles, assigns wildcard permissions to `Admin`, and creates the user `admin` with password `admin123`.
+  </Step>
+
+  <Step title="Verify the API is running">
+    ```bash
+    curl http://localhost:8000/
+    ```
+
+    Expected response:
+
+    ```json
+    {
+      "name": "Rappi2",
+      "version": "1.0.0",
+      "docs": "/docs",
+      "openapi": "/openapi.json"
+    }
+    ```
+  </Step>
+</Steps>
+
+## Useful commands
+
+```bash
+# View logs for all services
+docker-compose logs -f
+
+# View logs for a single service
+docker-compose logs -f api
+docker-compose logs -f postgres
+docker-compose logs -f mongodb
+
+# Restart the API after a code change
+docker-compose restart api
+
+# Stop all services (data is preserved in volumes)
+docker-compose stop
+
+# Stop and remove containers and volumes
+docker-compose down -v
+```
+
+<Note>
+  The API is available at [http://localhost:8000](http://localhost:8000). Interactive API documentation (Swagger UI) is at [http://localhost:8000/docs](http://localhost:8000/docs) and the ReDoc view is at [http://localhost:8000/redoc](http://localhost:8000/redoc).
+</Note>

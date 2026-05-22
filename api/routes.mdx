@@ -1,0 +1,531 @@
+---
+title: "Routes API — plan and manage delivery routes"
+description: "Create and manage delivery routes with OpenRouteService integration, ordered stops, and automatic geofence generation from computed geometry."
+---
+
+The Routes API lets you manually create delivery routes or auto-plan them via OpenRouteService (ORS). Each route belongs to an order (`orden_id`) and can carry an ordered list of stops (`paradas`). When auto-planning, the API calls ORS to compute distance and duration, then optionally creates a buffer geofence around the computed geometry in MongoDB.
+
+<Info>All endpoints require a valid Bearer token. The required permission is noted on each operation.</Info>
+
+---
+
+## List routes
+
+`GET /rutas`
+
+**Permission:** `rutas:read`
+
+<ParamField query="orden_id" type="integer">
+  Filter routes by order ID. Omit to return all routes.
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X GET "https://api.rappi2.com/rutas?orden_id=42" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+[
+  {
+    "id": 7,
+    "orden_id": 42,
+    "distancia_km": "12.500",
+    "tiempo_estimado": "PT30M",
+    "paradas": [
+      {
+        "id": 1,
+        "ruta_id": 7,
+        "orden_id": 42,
+        "direccion": "Av. Arequipa 1234, Lima",
+        "distrito": "Miraflores",
+        "secuencia": 1,
+        "estado": "Pendiente",
+        "fecha_paso": null
+      }
+    ]
+  }
+]
+```
+</ResponseExample>
+
+---
+
+## Create route
+
+`POST /rutas`
+
+Manually create a route with a set of stops.
+
+**Permission:** `rutas:write`
+
+<ParamField body="orden_id" type="integer" required>
+  ID of the order this route belongs to. Must reference an existing order.
+</ParamField>
+
+<ParamField body="distancia_km" type="number">
+  Total route distance in kilometres.
+</ParamField>
+
+<ParamField body="tiempo_estimado" type="string">
+  Estimated travel time as an ISO 8601 duration string (e.g. `"PT45M"`).
+</ParamField>
+
+<ParamField body="paradas" type="object[]">
+  Ordered list of stops to include on creation.
+
+  <Expandable title="parada fields">
+    <ParamField body="direccion" type="string" required>
+      Street address of the stop.
+    </ParamField>
+    <ParamField body="secuencia" type="integer" required>
+      Position of this stop in the route sequence (1-based).
+    </ParamField>
+    <ParamField body="orden_id" type="integer">
+      Order ID associated with this particular stop (can differ from the route's `orden_id`).
+    </ParamField>
+    <ParamField body="distrito" type="string">
+      District or neighbourhood name.
+    </ParamField>
+    <ParamField body="estado" type="string" default="Pendiente">
+      Stop status. One of `Pendiente`, `Visitada`, `Omitida`.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X POST "https://api.rappi2.com/rutas" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "orden_id": 42,
+    "distancia_km": 12.5,
+    "tiempo_estimado": "PT30M",
+    "paradas": [
+      {"direccion": "Av. Arequipa 1234", "distrito": "Miraflores", "secuencia": 1}
+    ]
+  }'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 201
+{
+  "id": 7,
+  "orden_id": 42,
+  "distancia_km": "12.500",
+  "tiempo_estimado": "PT30M",
+  "paradas": [
+    {
+      "id": 1,
+      "ruta_id": 7,
+      "orden_id": 42,
+      "direccion": "Av. Arequipa 1234",
+      "distrito": "Miraflores",
+      "secuencia": 1,
+      "estado": "Pendiente",
+      "fecha_paso": null
+    }
+  ]
+}
+```
+</ResponseExample>
+
+---
+
+## Auto-plan route via ORS
+
+`POST /rutas/planificar`
+
+Calls OpenRouteService to compute the optimal route between an origin and destination, stores the computed distance and travel time, and optionally creates a buffer geofence in MongoDB around the returned geometry.
+
+**Permission:** `rutas:write`
+
+<Warning>
+  Returns `502` if the ORS service is unreachable or returns an error.
+</Warning>
+
+<ParamField body="orden_id" type="integer" required>
+  Order to associate with the planned route.
+</ParamField>
+
+<ParamField body="origen_lon" type="number" required>
+  Origin longitude (`-180` to `180`).
+</ParamField>
+
+<ParamField body="origen_lat" type="number" required>
+  Origin latitude (`-90` to `90`).
+</ParamField>
+
+<ParamField body="destino_lon" type="number" required>
+  Destination longitude (`-180` to `180`).
+</ParamField>
+
+<ParamField body="destino_lat" type="number" required>
+  Destination latitude (`-90` to `90`).
+</ParamField>
+
+<ParamField body="generar_geocerca" type="boolean" default="true">
+  When `true`, a `ruta_buffer` geofence is created in MongoDB around the computed route geometry.
+</ParamField>
+
+<ParamField body="tolerancia_metros" type="integer" default="50">
+  Buffer tolerance in metres for the geofence polygon (`1`–`5000`).
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X POST "https://api.rappi2.com/rutas/planificar" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "orden_id": 42,
+    "origen_lon": -77.0282,
+    "origen_lat": -12.0432,
+    "destino_lon": -77.0531,
+    "destino_lat": -12.1219,
+    "generar_geocerca": true,
+    "tolerancia_metros": 100
+  }'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 201
+{
+  "id": 8,
+  "orden_id": 42,
+  "distancia_km": "9.830",
+  "tiempo_estimado": "PT22M30S",
+  "paradas": []
+}
+```
+</ResponseExample>
+
+---
+
+## Get route
+
+`GET /rutas/{ruta_id}`
+
+Retrieve a single route with all its stops.
+
+**Permission:** `rutas:read`
+
+<ParamField path="ruta_id" type="integer" required>
+  Route ID.
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X GET "https://api.rappi2.com/rutas/7" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "id": 7,
+  "orden_id": 42,
+  "distancia_km": "12.500",
+  "tiempo_estimado": "PT30M",
+  "paradas": []
+}
+```
+</ResponseExample>
+
+---
+
+## Update route
+
+`PATCH /rutas/{ruta_id}`
+
+Partially update a route's distance or estimated time. All body fields are optional.
+
+**Permission:** `rutas:write`
+
+<ParamField path="ruta_id" type="integer" required>
+  Route ID.
+</ParamField>
+
+<ParamField body="distancia_km" type="number">
+  Updated distance in kilometres.
+</ParamField>
+
+<ParamField body="tiempo_estimado" type="string">
+  Updated estimated duration as ISO 8601 duration (e.g. `"PT1H"`).
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X PATCH "https://api.rappi2.com/rutas/7" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"distancia_km": 13.0}'
+```
+</RequestExample>
+
+---
+
+## Delete route
+
+`DELETE /rutas/{ruta_id}`
+
+Deletes the route and all associated geofences stored in MongoDB.
+
+**Permission:** `rutas:delete`
+
+<Warning>Deleting a route also removes all geofences linked to it from the `geocercas` collection in MongoDB.</Warning>
+
+<ParamField path="ruta_id" type="integer" required>
+  Route ID.
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X DELETE "https://api.rappi2.com/rutas/7" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 204
+```
+</ResponseExample>
+
+---
+
+## List stops
+
+`GET /rutas/{ruta_id}/paradas`
+
+Return all stops for a route ordered by `secuencia`.
+
+**Permission:** `rutas:read`
+
+<ParamField path="ruta_id" type="integer" required>
+  Route ID.
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X GET "https://api.rappi2.com/rutas/7/paradas" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+[
+  {
+    "id": 1,
+    "ruta_id": 7,
+    "orden_id": 42,
+    "direccion": "Av. Arequipa 1234",
+    "distrito": "Miraflores",
+    "secuencia": 1,
+    "estado": "Pendiente",
+    "fecha_paso": null
+  }
+]
+```
+</ResponseExample>
+
+---
+
+## Add stop
+
+`POST /rutas/{ruta_id}/paradas`
+
+Append a new stop to an existing route.
+
+**Permission:** `rutas:write`
+
+<ParamField path="ruta_id" type="integer" required>
+  Route ID.
+</ParamField>
+
+<ParamField body="direccion" type="string" required>
+  Street address of the stop.
+</ParamField>
+
+<ParamField body="secuencia" type="integer" required>
+  Position in the delivery sequence (1-based).
+</ParamField>
+
+<ParamField body="orden_id" type="integer">
+  Order associated with this stop.
+</ParamField>
+
+<ParamField body="distrito" type="string">
+  District name.
+</ParamField>
+
+<ParamField body="estado" type="string" default="Pendiente">
+  Initial stop status: `Pendiente`, `Visitada`, or `Omitida`.
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X POST "https://api.rappi2.com/rutas/7/paradas" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"direccion": "Jr. de la Union 500", "secuencia": 2, "distrito": "Cercado de Lima"}'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 201
+{
+  "id": 2,
+  "ruta_id": 7,
+  "orden_id": null,
+  "direccion": "Jr. de la Union 500",
+  "distrito": "Cercado de Lima",
+  "secuencia": 2,
+  "estado": "Pendiente",
+  "fecha_paso": null
+}
+```
+</ResponseExample>
+
+---
+
+## Get stop
+
+`GET /rutas/{ruta_id}/paradas/{parada_id}`
+
+Retrieve a single stop by ID, scoped to the given route.
+
+**Permission:** `rutas:read`
+
+<ParamField path="ruta_id" type="integer" required>
+  Route ID.
+</ParamField>
+
+<ParamField path="parada_id" type="integer" required>
+  Stop ID.
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X GET "https://api.rappi2.com/rutas/7/paradas/2" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+---
+
+## Update stop
+
+`PATCH /rutas/{ruta_id}/paradas/{parada_id}`
+
+Update a stop's status, timestamp, address, or district. All body fields are optional.
+
+**Permission:** `rutas:write`
+
+<ParamField path="ruta_id" type="integer" required>
+  Route ID.
+</ParamField>
+
+<ParamField path="parada_id" type="integer" required>
+  Stop ID.
+</ParamField>
+
+<ParamField body="estado" type="string">
+  New status: `Pendiente`, `Visitada`, or `Omitida`.
+</ParamField>
+
+<ParamField body="fecha_paso" type="string">
+  ISO 8601 datetime at which the stop was visited.
+</ParamField>
+
+<ParamField body="direccion" type="string">
+  Updated street address.
+</ParamField>
+
+<ParamField body="distrito" type="string">
+  Updated district name.
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X PATCH "https://api.rappi2.com/rutas/7/paradas/2" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"estado": "Visitada", "fecha_paso": "2026-05-22T14:30:00Z"}'
+```
+</RequestExample>
+
+---
+
+## Delete stop
+
+`DELETE /rutas/{ruta_id}/paradas/{parada_id}`
+
+Remove a stop from a route.
+
+**Permission:** `rutas:write`
+
+<ParamField path="ruta_id" type="integer" required>
+  Route ID.
+</ParamField>
+
+<ParamField path="parada_id" type="integer" required>
+  Stop ID.
+</ParamField>
+
+<RequestExample>
+```bash cURL
+curl -X DELETE "https://api.rappi2.com/rutas/7/paradas/2" \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 204
+```
+</ResponseExample>
+
+---
+
+## Response schema
+
+<ResponseField name="id" type="integer" required>
+  Route ID (auto-incremented).
+</ResponseField>
+
+<ResponseField name="orden_id" type="integer" required>
+  Order this route belongs to.
+</ResponseField>
+
+<ResponseField name="distancia_km" type="string">
+  Distance in kilometres, returned as a decimal string.
+</ResponseField>
+
+<ResponseField name="tiempo_estimado" type="string">
+  Estimated travel time in ISO 8601 duration format (e.g. `"PT30M"`).
+</ResponseField>
+
+<ResponseField name="paradas" type="object[]">
+  Ordered list of stops on this route.
+
+  <Expandable title="parada fields">
+    <ResponseField name="id" type="integer" required>Stop ID.</ResponseField>
+    <ResponseField name="ruta_id" type="integer" required>Parent route ID.</ResponseField>
+    <ResponseField name="orden_id" type="integer">Associated order ID.</ResponseField>
+    <ResponseField name="direccion" type="string" required>Street address.</ResponseField>
+    <ResponseField name="distrito" type="string">District or neighbourhood.</ResponseField>
+    <ResponseField name="secuencia" type="integer" required>Sequence position (1-based).</ResponseField>
+    <ResponseField name="estado" type="string" required>
+      One of `Pendiente`, `Visitada`, `Omitida`.
+    </ResponseField>
+    <ResponseField name="fecha_paso" type="string">
+      ISO 8601 datetime when the stop was visited. `null` if not yet visited.
+    </ResponseField>
+  </Expandable>
+</ResponseField>

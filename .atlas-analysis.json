@@ -1,0 +1,137 @@
+{
+  "projectType": "api-service",
+  "projectName": "Rappi2",
+  "projectDescription": "A hybrid FastAPI logistics API backed by PostgreSQL and MongoDB, providing delivery management with order tracking, GPS tracking, route planning, RBAC, and operational reporting.",
+  "theme": "luma",
+  "primaryColor": "#E53935",
+  "lightColor": null,
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "authentication"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/data-model",
+              "concepts/rbac"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/order-lifecycle",
+              "guides/gps-tracking",
+              "guides/route-planning",
+              "guides/reports"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/docker",
+              "deployment/configuration",
+              "deployment/database-setup"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Auth & Users",
+            "pages": [
+              "api/auth",
+              "api/users",
+              "api/sessions",
+              "api/roles"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "api/clients",
+              "api/orders",
+              "api/drivers",
+              "api/vehicles",
+              "api/assignments"
+            ]
+          },
+          {
+            "group": "Logistics",
+            "pages": [
+              "api/routes",
+              "api/tracking",
+              "api/incidents",
+              "api/notifications"
+            ]
+          },
+          {
+            "group": "Analytics",
+            "pages": [
+              "api/reports",
+              "api/audit"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "JWT authentication with refresh token rotation and revocation",
+    "RBAC with fine-grained (resource, action) permissions and wildcard support",
+    "Full delivery lifecycle: orders, driver assignments, and state transitions",
+    "GPS tracking with geospatial queries (nearby drivers, geofence containment)",
+    "Route planning via OpenRouteService integration with automatic geofence generation",
+    "Hybrid persistence: PostgreSQL for transactional data, MongoDB for geospatial/logs",
+    "HTTP audit logging to MongoDB with TTL expiry",
+    "File evidence uploads using MongoDB GridFS",
+    "Rich KPI and analytics reporting endpoints (dashboard, SLA, driver efficiency)"
+  ],
+  "publicApiSurface": [
+    "POST /api/auth/register",
+    "POST /api/auth/login",
+    "POST /api/auth/refresh",
+    "POST /api/auth/logout",
+    "GET /api/auth/me",
+    "GET /api/roles",
+    "POST /api/roles",
+    "POST /api/roles/{rol_id}/permisos",
+    "GET /api/usuarios",
+    "GET /api/sesiones/me",
+    "GET /api/clientes",
+    "POST /api/clientes",
+    "GET /api/ordenes",
+    "POST /api/ordenes",
+    "GET /api/conductores",
+    "GET /api/vehiculos",
+    "POST /api/asignaciones",
+    "PATCH /api/asignaciones/{id}/iniciar",
+    "PATCH /api/asignaciones/{id}/finalizar",
+    "POST /api/rutas/planificar",
+    "POST /api/tracking/ping",
+    "GET /api/tracking/asignacion/{id}",
+    "GET /api/tracking/conductores-cerca",
+    "POST /api/geocercas",
+    "GET /api/geocercas/contiene",
+    "GET /api/incidencias",
+    "GET /api/notificaciones",
+    "GET /api/auditoria",
+    "GET /api/reportes/dashboard",
+    "GET /api/reportes/ventas",
+    "GET /api/reportes/sla-entregas",
+    "GET /api/reportes/conductores/eficiencia",
+    "GET /api/reportes/operativo"
+  ]
+}

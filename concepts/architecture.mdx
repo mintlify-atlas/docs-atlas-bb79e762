@@ -1,0 +1,100 @@
+---
+title: "Rappi2 architecture overview"
+description: "Rappi2 is an async FastAPI monolith with domain-organized layers and hybrid PostgreSQL+MongoDB persistence for logistics workloads."
+---
+
+Rappi2 is an asynchronous FastAPI application structured as a modular monolith. Rather than splitting into microservices, the codebase divides responsibility across well-defined layers — routers, models, schemas, services, middleware, and core infrastructure — while keeping a single deployable unit. Persistence is split between PostgreSQL (transactional records) and MongoDB (high-volume, geospatial, and document data), with every layer using Python's `async`/`await` throughout.
+
+## Application layers
+
+Each layer has a single responsibility and communicates with adjacent layers only through defined interfaces.
+
+| Layer | Directory | Responsibility |
+|---|---|---|
+| Routers | `api/` | HTTP endpoints, request validation, dependency injection, response serialization |
+| SQLAlchemy models | `models/` | PostgreSQL table definitions and ORM relationships |
+| Pydantic schemas | `schemas/` | Request/response contracts and data validation |
+| Business services | `services/` | Domain logic, external integrations, MongoDB operations |
+| Middleware | `middleware/` | Cross-cutting concerns (audit logging, CORS) |
+| Core infrastructure | `core/` | Database sessions, MongoDB client, security utilities, application settings |
+
+```
+HTTP request
+     │
+     ▼
+┌─────────────┐
+│  middleware  │  AuditMiddleware, CORSMiddleware
+└──────┬──────┘
+       │
+       ▼
+┌─────────────┐
+│   api/      │  FastAPI routers + dependency injection
+└──────┬──────┘
+       │
+  ┌────┴────┐
+  ▼         ▼
+models/   services/
+(SQLAlchemy) (business logic + MongoDB)
+  │         │
+  ▼         ▼
+PostgreSQL  MongoDB
+```
+
+<CardGroup cols={2}>
+  <Card title="PostgreSQL layer" icon="database">
+    Transactional tables managed via SQLAlchemy async sessions. Covers orders, users, payments, assignments, and routes.
+  </Card>
+  <Card title="MongoDB layer" icon="leaf">
+    Document collections managed via Motor. Covers GPS pings, geofences, audit logs, evidence files (GridFS), and notifications.
+  </Card>
+</CardGroup>
+
+## Hybrid persistence
+
+Rappi2 deliberately uses two databases, each chosen for the kind of data it stores best.
+
+**PostgreSQL** holds the relational, transactional core:
+
+- `usuarios`, `roles`, `permisos`, `tokens` — identity and access
+- `clientes`, `clientes_direcciones` — customer records
+- `ordenes`, `pagos`, `facturas` — order lifecycle and billing
+- `conductores`, `vehiculos`, `asignaciones` — fleet and dispatch
+- `rutas_planificadas`, `paradas` — planned routes
+- `incidencias` — incidents tied to assignments
+
+**MongoDB** holds high-volume, geospatial, or schema-flexible data:
+
+- `gps_tracking` — continuous GPS pings from drivers, with a `2dsphere` index on the `location` field (GeoJSON `Point`)
+- `geocercas` — polygon geofences with a `2dsphere` index on `geometry` for `$geoIntersects` queries
+- `auditoria` — one document per HTTP request, with a TTL index that expires records after 90 days
+- `evidencias` — metadata records linked to incident reports; binary files stored in GridFS (`evidencias_files` bucket)
+- `notificaciones` — per-recipient notification documents with read/unread state
+
+## Async everywhere
+
+Every I/O operation in Rappi2 is non-blocking:
+
+- **FastAPI** runs on an ASGI server (Uvicorn/Hypercorn) and handles all requests as coroutines.
+- **SQLAlchemy async** (`AsyncSession` from `sqlalchemy.ext.asyncio`) issues PostgreSQL queries without blocking the event loop.
+- **Motor** (`AsyncIOMotorDatabase`, `AsyncIOMotorGridFSBucket`) provides fully async MongoDB access, including streaming GridFS uploads and downloads.
+
+The application lifecycle (`lifespan`) opens the MongoDB connection pool at startup, ensures all indexes are created, and closes the pool cleanly on shutdown.
+
+## Middleware
+
+Two middleware layers wrap every request:
+
+**CORSMiddleware** (from Starlette) enforces allowed origins, methods, and headers based on `settings.CORS_ORIGINS`.
+
+**AuditMiddleware** intercepts every request not on the exclusion list (`/`, `/docs`, `/redoc`, `/openapi.json`, `/favicon.ico`) and writes a document to the `auditoria` MongoDB collection. It captures:
+
+- `usuario_id` — extracted from the `Authorization: Bearer` JWT if present
+- `ruta` — the request path
+- `metodo` — HTTP method
+- `ip` — client IP, respecting `X-Forwarded-For`
+- `status_code` — from the downstream response
+- `payload_hash` — SHA-256 of the first 1 KB of the request body for mutating methods
+
+<Note>
+Audit logging can be disabled by setting `AUDIT_ENABLED=false` in the environment. When disabled, the middleware is a no-op pass-through.
+</Note>

@@ -1,0 +1,99 @@
+---
+title: "Database setup and migrations for Rappi2"
+description: "Run Alembic migrations to create the PostgreSQL schema, let Rappi2 auto-create MongoDB indexes on startup, and seed the initial admin data."
+---
+
+Rappi2 uses Alembic to manage the PostgreSQL schema and creates MongoDB indexes automatically on startup via `ensure_all_indexes()`. You need to run migrations once after cloning the project, and again whenever a new revision is added.
+
+## Running migrations
+
+Apply all pending migrations to bring the schema to the latest revision:
+
+```bash
+alembic upgrade head
+```
+
+When using Docker Compose, run this inside the `api` container:
+
+```bash
+docker-compose exec api alembic upgrade head
+```
+
+The current migrations create 15 tables covering roles, permissions, users, clients, orders, payments, invoices, vehicles, drivers, assignments, routes, stops, and incidents, then convert all datetime columns to `TIMESTAMP WITH TIME ZONE`.
+
+## Creating a new migration
+
+After modifying SQLAlchemy models, generate a migration automatically:
+
+```bash
+alembic revision --autogenerate -m "describe your change here"
+```
+
+Review the generated file in `alembic/versions/`, then apply it:
+
+```bash
+alembic upgrade head
+```
+
+## MongoDB indexes
+
+MongoDB indexes are created automatically every time the API starts, by calling `ensure_all_indexes()` during the application lifespan. You do not need to run any command manually.
+
+The following indexes are created across the configured `MONGO_DB` database:
+
+| Collection | Index | Type |
+|---|---|---|
+| `gps_tracking` | `location` | 2dsphere (geospatial) |
+| `gps_tracking` | `asignacion_id` + `timestamp` | Compound |
+| `geocercas` | `geometry` | 2dsphere (geospatial) |
+| `geocercas` | `ruta_id` + `activa` | Compound |
+| `auditoria` | `usuario_id` + `timestamp` | Compound |
+| `auditoria` | `timestamp` | TTL — records expire after 90 days |
+| `notificaciones` | `destinatario_tipo` + `destinatario_id` + `fecha` | Compound |
+| `notificaciones` | `leida` | Single field |
+| `evidencias` | `incidencia_id` | Single field |
+| `evidencias` | `archivos.file_id` | Single field |
+
+## Seeding initial data
+
+Run the seed script to create the default roles and admin user:
+
+```bash
+python scripts/seed_admin.py
+```
+
+When using Docker Compose:
+
+```bash
+docker-compose exec api python scripts/seed_admin.py
+```
+
+The script creates:
+
+- **Roles**: `Admin`, `Despachador`, `Conductor`, `Cliente`
+- **Permissions**: a wildcard `*:*` permission assigned to the `Admin` role
+- **Admin user**: username `admin`, password `admin123`, email `admin@rappi2.com`
+
+The script is safe to re-run. It skips any records that already exist.
+
+## Checking database health
+
+Verify that PostgreSQL is reachable and the schema is applied:
+
+```bash
+docker-compose exec postgres psql -U postgres -d rappi2 -c "\dt"
+```
+
+Verify that MongoDB is reachable:
+
+```bash
+docker-compose exec mongodb mongosh -u admin -p admin --authenticationDatabase admin --eval "db.adminCommand('ping')"
+```
+
+<Note>
+  Alembic migrations are idempotent — running `alembic upgrade head` when the schema is already up to date completes without making any changes.
+</Note>
+
+<Warning>
+  Always run `alembic upgrade head` before starting the API in production. The application does not apply migrations automatically on startup. Starting the API against an outdated schema will cause runtime errors.
+</Warning>

@@ -1,0 +1,54 @@
+---
+title: "Configure Rappi2 environment variables"
+description: "Reference for all Rappi2 environment variables, their defaults, and guidance on which values must change before going to production."
+---
+
+Rappi2 is configured entirely through environment variables, loaded from a `.env` file at startup via `pydantic-settings`. Copy `.env.example` to `.env` and adjust the values before running the application. Variables set in the shell or in `docker-compose.yml` take precedence over the `.env` file.
+
+## Variable reference
+
+| Variable | Default | Description |
+|---|---|---|
+| `DATABASE_URL` | *(required)* | PostgreSQL connection string in SQLAlchemy async format, e.g. `postgresql+asyncpg://user:pass@host:5432/dbname` |
+| `MONGO_URL` | *(required)* | MongoDB connection URI, e.g. `mongodb://user:pass@host:27017/` |
+| `MONGO_DB` | `rappi2_mongo` | MongoDB database name used by the application |
+| `SECRET_KEY` | `supersecretkey_please_change_in_production` | Key used to sign and verify JWT tokens (HS256). Must be a long random string in any non-development environment |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | `15` | Lifetime of access tokens in minutes |
+| `REFRESH_TOKEN_EXPIRE_DAYS` | `7` | Lifetime of refresh tokens in days |
+| `AUDIT_ENABLED` | `true` | When `true`, every HTTP request is logged to the `auditoria` MongoDB collection |
+| `ORS_API_KEY` | `your_ors_api_key_here` | API key for [OpenRouteService](https://openrouteservice.org/), used for route planning |
+| `CORS_ORIGINS` | `["*"]` | Allowed CORS origins. Accepts a comma-separated string or a JSON array |
+
+## Additional Docker Compose variables
+
+When deploying with Docker Compose, the following variables control how the `postgres` and `mongodb` services are initialised. They are used to build `DATABASE_URL` and `MONGO_URL` inside the containers automatically.
+
+| Variable | Default | Description |
+|---|---|---|
+| `POSTGRES_USER` | `postgres` | PostgreSQL superuser username |
+| `POSTGRES_PASSWORD` | `postgres` | PostgreSQL superuser password |
+| `POSTGRES_DB` | `rappi2` | PostgreSQL database to create on first run |
+| `MONGO_USER` | `admin` | MongoDB root username |
+| `MONGO_PASSWORD` | `admin` | MongoDB root password |
+
+<Warning>
+  `SECRET_KEY` must be changed from its default value in any non-development environment. Tokens signed with the default key can be forged by anyone who knows it. Generate a secure value with:
+
+  ```bash
+  openssl rand -hex 32
+  ```
+</Warning>
+
+<Note>
+  `CORS_ORIGINS` accepts either a comma-separated string or a JSON array. Both of the following are valid:
+
+  ```bash
+  # Comma-separated
+  CORS_ORIGINS=https://app.example.com,https://admin.example.com
+
+  # JSON array
+  CORS_ORIGINS=["https://app.example.com","https://admin.example.com"]
+  ```
+
+  The default value `*` allows requests from any origin. Restrict this before going to production.
+</Note>
